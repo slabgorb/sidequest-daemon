@@ -1,0 +1,406 @@
+"""sidequest-renderer daemon — persistent multi-model process on Unix domain socket.
+
+Hosts Flux, ACE-Step, and TTS workers in a single process with all models
+pre-loaded. Serves render requests over a Unix domain socket, routing to
+the appropriate worker by tier. Stays warm between sessions.
+
+Usage:
+    sidequest-renderer                          # start daemon (loads all models)
+    sidequest-renderer --warmup=flux            # start + load Flux only
+    sidequest-renderer --no-warmup              # start without loading models (testing)
+    sidequest-renderer --shutdown               # send shutdown to running daemon
+    sidequest-renderer --status                 # check daemon status
+    sidequest-renderer --genre-packs /path      # set genre packs directory
+    sidequest-renderer --output-dir /path       # set output directory
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+import os
+import signal
+import sys
+import tempfile
+from pathlib import Path
+
+SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
+PID_PATH = Path("/tmp/sidequest-renderer.pid")
+
+log = logging.getLogger(__name__)
+
+# Tier → worker routing.
+FLUX_TIERS = frozenset({"scene_illustration", "portrait", "landscape", "cartography", "text_overlay", "tactical_sketch"})
+MUSIC_TIERS = frozenset({"music"})
+TTS_TIERS = frozenset({"tts"})
+
+
+class WorkerPool:
+    """Manages Flux, ACE-Step, and TTS workers with lazy or eager loading."""
+
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = output_dir
+        self._flux = None
+        self._acestep = None
+        self._tts = None
+        self._flux_loaded = False
+        self._acestep_loaded = False
+        self._tts_loaded = False
+
+    def warm_up_flux(self) -> dict:
+        """Load and warm up Flux worker (both schnell and dev variants)."""
+        if self._flux_loaded:
+            return {"worker": "flux", "status": "already_warm", "warmup_ms": 0}
+        from sidequest_daemon.media.workers.flux_worker import FluxWorker
+        self._flux = FluxWorker(self.output_dir / "flux")
+        log.info("Loading Flux schnell (text overlays)...")
+        self._flux.load_model("schnell")
+        log.info("Loading Flux dev (cartography)...")
+        self._flux.load_model("dev")
+        result = self._flux.warm_up()
+        self._flux_loaded = True
+        log.info("Flux warm — both variants (%.1fs)", result.get("warmup_ms", 0) / 1000)
+        return {"worker": "flux", "status": "warm", "variants": ["schnell", "dev"], **result}
+
+    def _ensure_flux(self) -> None:
+        if not self._flux_loaded:
+            self.warm_up_flux()
+
+    def warm_up_acestep(self) -> dict:
+        """Load and warm up ACE-Step music worker."""
+        if self._acestep_loaded:
+            return {"worker": "acestep", "status": "already_warm", "warmup_ms": 0}
+        from sidequest_daemon.media.workers.acestep_worker import ACEStepWorker
+        self._acestep = ACEStepWorker(self.output_dir / "acestep")
+        self._acestep.load_model()
+        result = self._acestep.warm_up()
+        self._acestep_loaded = True
+        log.info("ACE-Step warm (%.1fs)", result.get("warmup_ms", 0) / 1000)
+        return {"worker": "acestep", "status": "warm", **result}
+
+    def warm_up_tts(self) -> dict:
+        """Load and warm up TTS worker."""
+        if self._tts_loaded:
+            return {"worker": "tts", "status": "already_warm", "warmup_ms": 0}
+        from sidequest_daemon.media.workers.tts_worker import TTSWorker
+        self._tts = TTSWorker(self.output_dir / "tts")
+        self._tts.load_model()
+        result = self._tts.warm_up()
+        self._tts_loaded = True
+        log.info("TTS warm (%.1fs)", result.get("warmup_ms", 0) / 1000)
+        return {"worker": "tts", "status": "warm", **result}
+
+    def _ensure_acestep(self) -> None:
+        if not self._acestep_loaded:
+            self.warm_up_acestep()
+
+    def _ensure_tts(self) -> None:
+        if not self._tts_loaded:
+            self.warm_up_tts()
+
+    def render(self, params: dict) -> dict:
+        """Route render request to the appropriate worker by tier."""
+        tier = params.get("tier", "")
+        if tier in MUSIC_TIERS:
+            self._ensure_acestep()
+            return self._acestep.render(params)
+        elif tier in TTS_TIERS:
+            self._ensure_tts()
+            return self._tts.render(params)
+        elif tier in FLUX_TIERS:
+            self._ensure_flux()
+            return self._flux.render(params)
+        else:
+            raise ValueError(f"Unknown tier: {tier!r}")
+
+    def status(self) -> dict:
+        """Return current worker status."""
+        return {
+            "flux": "warm" if self._flux_loaded else "cold",
+            "acestep": "warm" if self._acestep_loaded else "cold",
+            "tts": "warm" if self._tts_loaded else "cold",
+            "supported_tiers": {
+                "flux": sorted(FLUX_TIERS),
+                "acestep": sorted(MUSIC_TIERS),
+                "tts": sorted(TTS_TIERS),
+            },
+        }
+
+    def cleanup(self) -> None:
+        """Release all models and clear GPU cache."""
+        if self._flux is not None:
+            self._flux.cleanup()
+            self._flux = None
+            self._flux_loaded = False
+        if self._acestep is not None:
+            self._acestep.cleanup()
+            self._acestep = None
+            self._acestep_loaded = False
+        if self._tts is not None:
+            self._tts.cleanup()
+            self._tts = None
+            self._tts_loaded = False
+
+
+async def _handle_client(
+    reader: asyncio.StreamReader,
+    writer: asyncio.StreamWriter,
+    pool: WorkerPool,
+    render_lock: asyncio.Lock,
+) -> None:
+    """Handle a single client connection — read JSON lines, dispatch, respond."""
+    peer = writer.get_extra_info("peername") or "unix-client"
+    log.info("Client connected: %s", peer)
+
+    try:
+        while True:
+            line = await reader.readline()
+            if not line:
+                break
+
+            line_str = line.decode().strip()
+            if not line_str:
+                continue
+
+            try:
+                req = json.loads(line_str)
+                req_id = req.get("id", "unknown")
+                method = req.get("method")
+            except json.JSONDecodeError as e:
+                _write(writer, "unknown", error={"code": "PARSE_ERROR", "message": str(e)})
+                continue
+
+            if not method:
+                _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "Missing 'method'"})
+                continue
+
+            params = req.get("params", {})
+
+            if method == "ping":
+                _write(writer, req_id, result={"status": "ok"})
+            elif method == "status":
+                _write(writer, req_id, result=pool.status())
+            elif method == "shutdown":
+                _write(writer, req_id, result={"status": "ok"})
+                log.info("Shutdown requested by client")
+                asyncio.get_event_loop().call_soon(lambda: os.kill(os.getpid(), signal.SIGTERM))
+            elif method == "warm_up":
+                try:
+                    target = params.get("worker", "all")
+                    results = {}
+                    if target in ("all", "flux"):
+                        results["flux"] = await asyncio.to_thread(pool.warm_up_flux)
+                    if target in ("all", "acestep"):
+                        results["acestep"] = await asyncio.to_thread(pool.warm_up_acestep)
+                    if target in ("all", "tts"):
+                        results["tts"] = await asyncio.to_thread(pool.warm_up_tts)
+                    _write(writer, req_id, result={"status": "warm", "workers": results})
+                except Exception as e:
+                    _write(writer, req_id, error={"code": "WARMUP_FAILED", "message": str(e)})
+            elif method == "render":
+                # Serialize renders — only one GPU operation at a time
+                async with render_lock:
+                    try:
+                        result = await asyncio.to_thread(pool.render, params)
+                        _write(writer, req_id, result=result)
+                    except Exception as e:
+                        _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
+            else:
+                _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
+    except (ConnectionResetError, BrokenPipeError):
+        log.info("Client disconnected: %s", peer)
+    finally:
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except Exception:
+            log.exception("Failed to close client writer")
+
+
+def _write(
+    writer: asyncio.StreamWriter,
+    req_id: str,
+    *,
+    result: dict | None = None,
+    error: dict | None = None,
+) -> None:
+    """Write a JSON response line to the client."""
+    resp: dict = {"id": req_id}
+    if result is not None:
+        resp["result"] = result
+    if error is not None:
+        resp["error"] = error
+    writer.write((json.dumps(resp) + "\n").encode())
+
+
+async def _run_daemon(
+    *,
+    warmup: str | bool = False,
+    output_dir: Path | None = None,
+    genre_packs: Path | None = None,
+) -> None:
+    """Start the daemon server.
+
+    warmup can be: False, True/"all", "flux", "tts"
+    """
+    if output_dir is None:
+        env_dir = os.environ.get("SIDEQUEST_OUTPUT_DIR")
+        output_dir = Path(env_dir) if env_dir else Path(tempfile.mkdtemp(prefix="sq-daemon-"))
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if genre_packs is not None:
+        os.environ["SIDEQUEST_GENRE_PACKS"] = str(genre_packs)
+    pool = WorkerPool(output_dir)
+    render_lock = asyncio.Lock()
+
+    if warmup:
+        target = warmup if isinstance(warmup, str) else "all"
+        if target in ("all", "flux"):
+            log.info("Pre-loading Flux model...")
+            await asyncio.to_thread(pool.warm_up_flux)
+        # ACE-Step removed — pre-recorded tracks used instead of procedural generation
+        if target in ("all", "tts"):
+            log.info("Pre-loading TTS model...")
+            await asyncio.to_thread(pool.warm_up_tts)
+        log.info("Models warm and ready")
+
+    # Clean up stale socket
+    if SOCKET_PATH.exists():
+        SOCKET_PATH.unlink()
+
+    server = await asyncio.start_unix_server(
+        lambda r, w: _handle_client(r, w, pool, render_lock),
+        path=str(SOCKET_PATH),
+    )
+
+    # Write PID file
+    PID_PATH.write_text(str(os.getpid()))
+    log.info("Daemon listening on %s (pid %d)", SOCKET_PATH, os.getpid())
+    log.info("Workers: %s", pool.status())
+
+    # Handle graceful shutdown
+    loop = asyncio.get_event_loop()
+    stop_event = asyncio.Event()
+
+    def _shutdown_signal() -> None:
+        log.info("Shutdown signal received")
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _shutdown_signal)
+
+    try:
+        await stop_event.wait()
+    finally:
+        log.info("Shutting down daemon...")
+        server.close()
+        await server.wait_closed()
+        pool.cleanup()
+        if SOCKET_PATH.exists():
+            SOCKET_PATH.unlink()
+        if PID_PATH.exists():
+            PID_PATH.unlink()
+        log.info("Daemon stopped")
+
+
+async def send_shutdown() -> None:
+    """Send shutdown command to a running daemon."""
+    if not SOCKET_PATH.exists():
+        print("No daemon running (socket not found)")
+        sys.exit(1)
+
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(SOCKET_PATH))
+        req = json.dumps({"id": "shutdown", "method": "shutdown", "params": {}})
+        writer.write((req + "\n").encode())
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        resp = json.loads(line.decode())
+        if resp.get("result", {}).get("status") == "ok":
+            print("Daemon shutdown requested")
+        else:
+            print(f"Unexpected response: {resp}")
+        writer.close()
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("Daemon not responding — cleaning up stale socket")
+        if SOCKET_PATH.exists():
+            SOCKET_PATH.unlink()
+        if PID_PATH.exists():
+            PID_PATH.unlink()
+
+
+async def send_status() -> None:
+    """Query daemon status."""
+    if not SOCKET_PATH.exists():
+        print("No daemon running (socket not found)")
+        sys.exit(1)
+
+    try:
+        reader, writer = await asyncio.open_unix_connection(str(SOCKET_PATH))
+        req = json.dumps({"id": "status", "method": "status", "params": {}})
+        writer.write((req + "\n").encode())
+        await writer.drain()
+        line = await asyncio.wait_for(reader.readline(), timeout=5.0)
+        resp = json.loads(line.decode())
+        if "result" in resp:
+            status = resp["result"]
+            print(f"Flux: {status.get('flux', 'unknown')}")
+            print(f"ACE-Step: {status.get('acestep', 'unknown')}")
+            print(f"TTS: {status.get('tts', 'unknown')}")
+            tiers = status.get("supported_tiers", {})
+            print(f"Flux tiers: {', '.join(tiers.get('flux', []))}")
+            print(f"ACE-Step tiers: {', '.join(tiers.get('acestep', []))}")
+            print(f"TTS tiers: {', '.join(tiers.get('tts', []))}")
+        else:
+            print(f"Error: {resp.get('error', resp)}")
+        writer.close()
+    except (ConnectionRefusedError, FileNotFoundError):
+        print("Daemon not responding")
+
+
+def _parse_arg(name: str) -> str | None:
+    """Extract --name VALUE from sys.argv, return value or None."""
+    for i, arg in enumerate(sys.argv[1:], 1):
+        if arg == name and i + 1 < len(sys.argv):
+            return sys.argv[i + 1]
+        if arg.startswith(f"{name}="):
+            return arg.split("=", 1)[1]
+    return None
+
+
+def main() -> None:
+    """CLI entry point for sidequest-renderer."""
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    )
+
+    if "--shutdown" in sys.argv:
+        asyncio.run(send_shutdown())
+    elif "--status" in sys.argv:
+        asyncio.run(send_status())
+    else:
+        # Warmup is the default — use --no-warmup to skip (e.g. for testing)
+        warmup: str | bool = "all"
+        for arg in sys.argv[1:]:
+            if arg == "--no-warmup":
+                warmup = False
+            elif arg.startswith("--warmup="):
+                warmup = arg.split("=", 1)[1]
+
+        # Parse optional paths
+        genre_packs_str = _parse_arg("--genre-packs")
+        output_dir_str = _parse_arg("--output-dir")
+        genre_packs = Path(genre_packs_str) if genre_packs_str else None
+        output_dir = Path(output_dir_str) if output_dir_str else None
+
+        asyncio.run(_run_daemon(
+            warmup=warmup,
+            output_dir=output_dir,
+            genre_packs=genre_packs,
+        ))
+
+
+if __name__ == "__main__":
+    main()
