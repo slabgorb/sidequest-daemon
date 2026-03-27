@@ -164,7 +164,7 @@ class FluxWorker:
         torch.mps.empty_cache()
 
         return {
-            "image_path": str(image_path),
+            "image_url": str(image_path),
             "width": tier_cfg["w"],
             "height": tier_cfg["h"],
             "elapsed_ms": elapsed_ms,
