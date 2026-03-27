@@ -1,24 +1,36 @@
 # sidequest-daemon
 
-Media services daemon for SideQuest — image generation, text-to-speech, and audio playback. Runs as a standalone Python process communicating via Unix socket, providing rendering services to the Rust game engine (`sidequest-api`).
+Media services daemon for SideQuest — image generation, music generation, text-to-speech, and audio playback. Runs as a standalone Python process communicating via Unix socket, providing rendering services to the Rust game engine (`sidequest-api`).
 
 ## Architecture
 
 ```
 sidequest-api (Rust)  ──JSON over Unix socket──►  sidequest-daemon (Python)
                                                     ├── Flux image generation (MPS/CUDA)
-                                                    ├── Kokoro / Piper TTS
-                                                    ├── Audio mixer (pygame)
+                                                    ├── ACE-Step music generation
+                                                    ├── Kokoro TTS (Piper fallback)
+                                                    ├── Audio mixer (pygame-ce)
                                                     └── Scene interpretation
 ```
 
 The daemon is a hot-loaded process — start it once, and it keeps GPU models warm between requests. The Rust backend sends render commands over `/tmp/sidequest-renderer.sock` and gets back file paths to generated images/audio.
+
+## Services
+
+**Flux Worker** — Image generation using Flux schnell and dev models. Six render tiers: `scene_illustration`, `portrait`, `landscape`, `text_overlay`, `cartography`, `tactical_sketch`. Supports Apple Silicon (MPS) and NVIDIA (CUDA).
+
+**Kokoro TTS** — Text-to-speech with 54 built-in voices, voice blending, streaming and batch modes, 24kHz PCM output. Character voice routing with per-voice effects. Piper as fallback engine.
+
+**ACE-Step Worker** — Prompt-based music generation via ACE-Step. Configurable duration and seed, outputs WAV files. Requires the `ACE_STEP_PATH` environment variable pointing to a local ACE-Step installation.
+
+**Audio Mixer** — pygame-ce based playback across 3 named channels: music, SFX, and ambience. Supports crossfade transitions and volume ducking.
 
 ## Prerequisites
 
 - Python 3.11+
 - For image generation: Apple Silicon (MPS) or NVIDIA GPU (CUDA)
 - For TTS: Kokoro ONNX models auto-download to `~/.sidequest/models/kokoro/`
+- For music generation: [ACE-Step](https://github.com/ace-step/ACE-Step) installed locally, `ACE_STEP_PATH` set
 - Genre packs directory (shared YAML + audio assets)
 
 ## Installation
@@ -42,8 +54,9 @@ sidequest-renderer
 # Start with GPU models pre-loaded (recommended for gameplay):
 sidequest-renderer --warmup
 
-# Warm up only Flux (skip TTS):
+# Warm up a single worker (skip others):
 sidequest-renderer --warmup=flux
+sidequest-renderer --warmup=acestep
 ```
 
 ### From the orchestrator
@@ -70,6 +83,7 @@ sidequest-renderer --shutdown  # Graceful shutdown
 |----------|---------|-------------|
 | `SIDEQUEST_GENRE_PACKS` | `../genre_packs` (sibling dir) | Path to genre packs directory |
 | `SIDEQUEST_OUTPUT_DIR` | temp dir | Directory for generated output files |
+| `ACE_STEP_PATH` | *(required for music)* | Path to local ACE-Step installation |
 
 ### CLI arguments
 
@@ -99,8 +113,8 @@ The daemon communicates via newline-delimited JSON over a Unix domain socket at 
 |--------|-------------|
 | `ping` | Health check — returns `{"status": "ok"}` |
 | `status` | Worker pool status and loaded models |
-| `render` | Generate an image from a StageCue |
-| `warm_up` | Pre-load GPU models (`{"worker": "flux"\|"tts"\|"all"}`) |
+| `render` | Generate an image or music track (routed by tier) |
+| `warm_up` | Pre-load models (`{"worker": "flux"\|"tts"\|"acestep"\|"all"}`) |
 | `shutdown` | Graceful daemon shutdown |
 
 ## Package structure
