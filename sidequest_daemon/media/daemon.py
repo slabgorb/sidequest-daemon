@@ -214,6 +214,8 @@ async def _handle_client(
         writer.close()
         try:
             await writer.wait_closed()
+        except BrokenPipeError:
+            log.debug("Client already disconnected before wait_closed: %s", peer)
         except Exception:
             log.exception("Failed to close client writer")
 
