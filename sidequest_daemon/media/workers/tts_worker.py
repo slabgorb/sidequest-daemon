@@ -21,6 +21,21 @@ from sidequest_daemon.voice.protocol import VoicePreset
 log = logging.getLogger(__name__)
 
 
+def _run_async(coro):
+    """Run an async coroutine from a synchronous thread context.
+
+    Python 3.14 removed the implicit event loop creation in
+    asyncio.get_event_loop() for non-main threads. This helper
+    creates a fresh event loop, runs the coroutine, and cleans up.
+    Safe to call from asyncio.to_thread() worker threads.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 class TTSWorker:
     """Text-to-speech worker backed by KokoroEngine."""
 
@@ -37,7 +52,7 @@ class TTSWorker:
         """Warm up the TTS engine. Returns timing metadata."""
         start = time.monotonic()
         if self._engine is not None:
-            asyncio.get_event_loop().run_until_complete(self._engine.warm_up())
+            _run_async(self._engine.warm_up())
         elapsed_ms = int((time.monotonic() - start) * 1000)
         return {"warmup_ms": elapsed_ms}
 
@@ -73,8 +88,7 @@ class TTSWorker:
         if self._engine is None:
             raise RuntimeError("TTS engine not loaded — call load_model() first")
 
-        loop = asyncio.get_event_loop()
-        segment = loop.run_until_complete(self._engine.synthesize(text, preset))
+        segment = _run_async(self._engine.synthesize(text, preset))
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         # Optionally write to file for debugging / caching
@@ -95,5 +109,5 @@ class TTSWorker:
     def cleanup(self) -> None:
         """Release the engine."""
         if self._engine is not None:
-            asyncio.get_event_loop().run_until_complete(self._engine.shutdown())
+            _run_async(self._engine.shutdown())
             self._engine = None
