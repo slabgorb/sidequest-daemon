@@ -18,7 +18,7 @@ _TIER_PROMPT_PREFIX: dict[RenderTier, str] = {
     RenderTier.TACTICAL_SKETCH: "top-down tactical battle map, square grid overlay, each combatant marked with a bold letter initial inside a colored circle, clear spacing between tokens, clean flat illustration style, high contrast labels, bird's-eye view, no perspective",
     RenderTier.LANDSCAPE: "wide establishing shot, scenic vista, atmospheric",
     RenderTier.PORTRAIT: "character portrait, detailed face and attire, centered subject",
-    RenderTier.SCENE_ILLUSTRATION: "",
+    RenderTier.SCENE_ILLUSTRATION: "detailed painterly illustration, hand-painted scene, dramatic composition",
 }
 
 # Default visual tags for common location keywords.
@@ -34,7 +34,7 @@ _DEFAULT_LOCATION_TAGS: dict[str, str] = {
 }
 
 # Negatives always included regardless of genre.
-_BASE_NEGATIVES = "watermark, signature, text, blurry, deformed, extra limbs, modern clothing, contemporary, t-shirt, collared shirt, photograph"
+_BASE_NEGATIVES = "watermark, signature, text, blurry, deformed, extra limbs, modern clothing, contemporary, t-shirt, collared shirt, photograph, photorealistic, hyperrealistic, smooth skin, airbrushed, polished surface, CGI"
 
 # Tiers that force the Flux worker (text rendering / cartography).
 _FLUX_FORCED_TIERS = {RenderTier.TEXT_OVERLAY, RenderTier.CARTOGRAPHY, RenderTier.TACTICAL_SKETCH}
@@ -251,7 +251,7 @@ class PromptComposer:
         if cue.tier == RenderTier.TACTICAL_SKETCH:
             parts.append("illegible text, blurry labels, overlapping tokens, 3D perspective, realistic rendering, photographic")
         elif cue.tier == RenderTier.SCENE_ILLUSTRATION:
-            parts.append("cluttered, messy composition")
+            parts.append("cluttered, messy composition, smooth digital render, photograph-like, photo-smooth")
 
         return ", ".join(parts)
 

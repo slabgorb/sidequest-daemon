@@ -67,18 +67,23 @@ class SubprocessRenderer(Renderer):
 
         params = cue.model_dump()
 
-        # Compose prompts via PromptComposer if visual style is configured
-        if self._composer is not None and self._visual_style is not None:
-            composed = self._composer.compose(cue, self._visual_style)
-            params["positive_prompt"] = composed.positive_prompt
-            params["clip_prompt"] = composed.clip_prompt
-            params["negative_prompt"] = composed.negative_prompt
-            params["seed"] = composed.seed
-            log.warning(
-                "RENDER prompt [%s]: %s",
-                cue.tier.value,
-                composed.positive_prompt[:200],
+        # Art direction is mandatory — refuse to render without it
+        if self._composer is None or self._visual_style is None:
+            raise WorkerError(
+                "NO_VISUAL_STYLE: Refusing to render without art direction. "
+                f"Load visual_style.yaml for the genre before rendering [{cue.tier.value}]."
             )
+
+        composed = self._composer.compose(cue, self._visual_style)
+        params["positive_prompt"] = composed.positive_prompt
+        params["clip_prompt"] = composed.clip_prompt
+        params["negative_prompt"] = composed.negative_prompt
+        params["seed"] = composed.seed
+        log.warning(
+            "RENDER prompt [%s]: %s",
+            cue.tier.value,
+            composed.positive_prompt[:200],
+        )
 
         request = WorkerRequest(
             method="render",

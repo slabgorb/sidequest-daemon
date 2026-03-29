@@ -152,6 +152,11 @@ class FluxWorker:
         else:
             pipe_kwargs["prompt"] = prompt
 
+        # DEBUG: log what's actually hitting the pipeline
+        log.info("FLUX RENDER [%s] seed=%s", tier_name, seed)
+        log.info("  CLIP (prompt):   %s", pipe_kwargs["prompt"][:150])
+        log.info("  T5   (prompt_2): %s", pipe_kwargs.get("prompt_2", "(same as prompt)")[:150])
+
         start = time.monotonic()
         result = self.pipes[variant](**pipe_kwargs)
         elapsed_ms = int((time.monotonic() - start) * 1000)
@@ -181,6 +186,10 @@ class FluxWorker:
         if params.get("positive_prompt"):
             return params["positive_prompt"]
 
+        # Accept raw prompt from batch scripts (generate_portraits.py, etc.)
+        if params.get("prompt"):
+            return params["prompt"]
+
         tier = params.get("tier", "")
         is_text_overlay = tier == "text_overlay"
 
@@ -200,7 +209,12 @@ class FluxWorker:
         if is_text_overlay:
             parts.extend(["clean typography", "readable text", "sharp lettering"])
 
-        return ", ".join(parts) if parts else "fantasy scene"
+        if not parts:
+            raise ValueError(
+                "No prompt content: params has no positive_prompt, prompt, subject, or tags. "
+                "Refusing to render without art direction."
+            )
+        return ", ".join(parts)
 
     def cleanup(self) -> None:
         """Release all loaded models and clear MPS cache."""
