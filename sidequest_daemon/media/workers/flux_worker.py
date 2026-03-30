@@ -131,6 +131,7 @@ class FluxWorker:
 
         prompt = self._compose_prompt(params)
         clip_prompt = params.get("clip_prompt", "")
+        negative = params.get("negative_prompt", "")
 
         seed = params.get("seed", 0)
         generator = torch.Generator("mps").manual_seed(seed)
@@ -138,6 +139,7 @@ class FluxWorker:
         # Flux dual encoder: prompt → CLIP (style), prompt_2 → T5 (content).
         # When clip_prompt is provided, route style keywords to CLIP and full
         # content to T5. Otherwise, single prompt goes to both encoders.
+        # Negative prompt goes to CLIP encoder for style exclusion.
         pipe_kwargs: dict = {
             "num_inference_steps": tier_cfg["steps"],
             "guidance_scale": tier_cfg["guidance"],
@@ -151,6 +153,9 @@ class FluxWorker:
             pipe_kwargs["prompt_2"] = prompt
         else:
             pipe_kwargs["prompt"] = prompt
+
+        if negative:
+            pipe_kwargs["negative_prompt"] = negative
 
         # DEBUG: log what's actually hitting the pipeline
         log.info("FLUX RENDER [%s] seed=%s", tier_name, seed)
