@@ -199,6 +199,75 @@ async def _handle_client(
                 except Exception as e:
                     _write(writer, req_id, error={"code": "WARMUP_FAILED", "message": str(e)})
             elif method == "render":
+                # If narration is provided, run LLM subject extraction first
+                # to convert narrative prose into visual image prompts.
+                # This replaces the Rust-side heuristic 120-char slicer.
+                if params.get("narration") and not params.get("positive_prompt"):
+                    from sidequest_daemon.media.subject_extractor import SubjectExtractor
+                    extractor = SubjectExtractor()
+                    extracted = await extractor.extract(params["narration"])
+                    if not extracted or not extracted.get("subject"):
+                        _write(writer, req_id, error={
+                            "code": "EXTRACTION_FAILED",
+                            "message": "SubjectExtractor returned no visual subject from narration. No fallback — refusing to render narrative prose directly.",
+                        })
+                        continue
+                    # Build StageCue-compatible params from extraction
+                    params["subject"] = extracted["subject"]
+                    params["mood"] = extracted.get("mood", "")
+                    params["tags"] = extracted.get("tags", [])
+                    # Override tier if extractor found a better one
+                    extracted_tier = extracted.get("tier", "")
+                    if extracted_tier:
+                        tier_lower = extracted_tier.lower()
+                        if tier_lower in FLUX_TIERS:
+                            params["tier"] = tier_lower
+                    log.info(
+                        "narration_extracted — subject=%s, mood=%s, tier=%s",
+                        extracted["subject"][:80],
+                        extracted.get("mood"),
+                        params.get("tier"),
+                    )
+
+                # If we have visual_style + subject, compose through PromptComposer
+                if params.get("subject") and params.get("art_style"):
+                    from sidequest_daemon.media.prompt_composer import PromptComposer
+                    from sidequest_daemon.renderer.models import RenderTier, StageCue
+                    from sidequest_daemon.genre.models import VisualStyle
+
+                    # Build a StageCue from params
+                    tier_str = params.get("tier", "scene_illustration")
+                    tier = RenderTier(tier_str) if tier_str in {t.value for t in RenderTier} else RenderTier.SCENE_ILLUSTRATION
+                    cue = StageCue(
+                        subject=params.get("subject", ""),
+                        tier=tier,
+                        location=params.get("location", ""),
+                        mood=params.get("mood", ""),
+                        characters=params.get("characters", []),
+                        tags=params.get("tags", []),
+                    )
+
+                    # Build minimal VisualStyle from params
+                    style = VisualStyle(
+                        positive_suffix=params.get("art_style", ""),
+                        negative_prompt=params.get("negative_prompt", ""),
+                        preferred_model="flux",
+                        visual_tag_overrides=params.get("visual_tag_overrides", {}),
+                    )
+
+                    composer = PromptComposer(
+                        visual_tag_overrides=style.visual_tag_overrides,
+                    )
+                    composed = composer.compose(cue, style)
+                    params["positive_prompt"] = composed.positive_prompt
+                    params["clip_prompt"] = composed.clip_prompt
+                    params["negative_prompt"] = composed.negative_prompt
+                    params["seed"] = composed.seed
+                    log.info(
+                        "prompt_composed — positive=%s",
+                        composed.positive_prompt[:150],
+                    )
+
                 # Serialize renders — only one GPU operation at a time
                 async with render_lock:
                     try:
