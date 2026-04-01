@@ -11,8 +11,14 @@ class VoiceRouter:
     """Routes narrative text through parser and registry to produce voiced segments."""
 
     def __init__(self, registry: VoicePresetRegistry | None = None) -> None:
-        self.parser = NarrativeSegmentParser()
         self.registry = registry or VoicePresetRegistry()
+        # Pass known character names to parser for identify_speaker wiring
+        known_npcs = self.registry.list_characters()
+        self.parser = NarrativeSegmentParser(known_npcs=known_npcs)
+
+    def update_known_npcs(self, npcs: list[str]) -> None:
+        """Update the parser's known NPC list (call after registering new voices)."""
+        self.parser.set_known_npcs(npcs)
 
     def route(self, text: str) -> list[tuple[str, VoicePreset]]:
         segments = self.parser.parse(text)

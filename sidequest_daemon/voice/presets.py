@@ -62,27 +62,3 @@ class EffectsPresetLibrary:
             preset = self.get_preset(name)
             combined.extend(preset.get("effects", []))
         return {"effects": combined}
-
-
-class CharacterEffectsRouter:
-    """Maps character IDs to effect presets."""
-
-    def __init__(
-        self,
-        library: EffectsPresetLibrary,
-        default_preset: str = "dry",
-    ) -> None:
-        self.library = library
-        self.default_preset = default_preset
-        self._mapping: dict[str, str] = {}
-
-    def map_character(self, character_id: str, preset_name: str) -> None:
-        """Assign *preset_name* to *character_id*. Raises ``KeyError`` if preset unknown."""
-        # Validate the preset exists.
-        self.library.get_preset(preset_name)
-        self._mapping[character_id] = preset_name
-
-    def get_preset_for_character(self, character_id: str) -> dict[str, Any]:
-        """Return the preset config for *character_id*, falling back to default."""
-        preset_name = self._mapping.get(character_id, self.default_preset)
-        return self.library.get_preset(preset_name)

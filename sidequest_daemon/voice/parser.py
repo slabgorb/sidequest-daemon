@@ -83,9 +83,34 @@ _QUOTE_THE_NAME_VERB = re.compile(
 class NarrativeSegmentParser:
     """Parses narrative text into a list of NarrativeSegments."""
 
+    def __init__(self, known_npcs: list[str] | None = None) -> None:
+        self._known_npcs: list[str] = known_npcs or []
+
+    def set_known_npcs(self, npcs: list[str]) -> None:
+        """Update the known NPC list for speaker identification."""
+        self._known_npcs = list(npcs)
+
     def parse(self, text: str) -> list[NarrativeSegment]:
         if not text or not text.strip():
             return []
+
+        # Pre-check: use identify_speaker for "Name says:" / "Name:" patterns
+        # against known NPCs. This handles dialogue attribution that the regex
+        # patterns below may miss (e.g., unquoted dialogue after a colon).
+        if self._known_npcs:
+            from sidequest_daemon.voice.tts_routing import identify_speaker
+
+            speaker = identify_speaker(text, self._known_npcs)
+            if not speaker.is_narrator and speaker.character_id:
+                # The entire text is attributed to this speaker
+                # Strip the "Name says:" or "Name:" prefix
+                for npc in self._known_npcs:
+                    prefix_patterns = [f"{npc} says:", f"{npc}:"]
+                    for prefix in prefix_patterns:
+                        if text.strip().startswith(prefix):
+                            speech = text.strip()[len(prefix):].strip()
+                            if speech:
+                                return [NarrativeSegment(text=speech, speaker=speaker.character_id)]
 
         segments: list[NarrativeSegment] = []
         # Collect all dialogue matches with their spans
