@@ -77,6 +77,11 @@ class WorkerPool:
         self._flux_loaded = False
         self._acestep_loaded = False
         self._tts_loaded = False
+        self.pipeline_factory = None  # Set by _run_daemon after init
+
+        # GPU memory coordinator — manages 80GB shared budget across backends
+        from sidequest_daemon.ml.memory_manager import ModelMemoryManager
+        self.memory_manager = ModelMemoryManager()
 
     def warm_up_flux(self) -> dict:
         """Load and warm up Flux worker (both schnell and dev variants)."""
@@ -229,35 +234,94 @@ async def _handle_client(
                 except Exception as e:
                     _write(writer, req_id, error={"code": "WARMUP_FAILED", "message": str(e)})
             elif method == "render":
-                # If narration is provided, run LLM subject extraction first
-                # to convert narrative prose into visual image prompts.
-                # This replaces the Rust-side heuristic 120-char slicer.
-                if params.get("narration") and not params.get("positive_prompt"):
-                    from sidequest_daemon.media.subject_extractor import SubjectExtractor
-                    extractor = SubjectExtractor()
-                    extracted = await extractor.extract(params["narration"])
-                    if not extracted or not extracted.get("subject"):
-                        _write(writer, req_id, error={
-                            "code": "EXTRACTION_FAILED",
-                            "message": "SubjectExtractor returned no visual subject from narration. No fallback — refusing to render narrative prose directly.",
-                        })
-                        continue
-                    # Build StageCue-compatible params from extraction
-                    params["subject"] = extracted["subject"]
-                    params["mood"] = extracted.get("mood", "")
-                    params["tags"] = extracted.get("tags", [])
-                    # Override tier if extractor found a better one
-                    extracted_tier = extracted.get("tier", "")
-                    if extracted_tier:
-                        tier_lower = extracted_tier.lower()
-                        if tier_lower in FLUX_TIERS:
-                            params["tier"] = tier_lower
-                    log.info(
-                        "narration_extracted — subject=%s, mood=%s, tier=%s",
-                        extracted["subject"][:80],
-                        extracted.get("mood"),
-                        params.get("tier"),
+                # Beat filter: skip non-visual beats before expensive GPU work
+                if params.get("narration") and params.get("game_state"):
+                    from sidequest_daemon.renderer.beat_filter import should_generate
+                    from sidequest_daemon.types import GameState, CombatState, ChaseState, Character
+
+                    gs_raw = params["game_state"]
+                    game_state = GameState(
+                        location=gs_raw.get("location", ""),
+                        time_of_day=gs_raw.get("time_of_day", ""),
+                        characters=[Character(name=c.get("name", "")) for c in gs_raw.get("characters", [])],
+                        combat=CombatState(in_combat=gs_raw.get("combat", {}).get("in_combat", False)),
+                        chase=ChaseState(in_chase=gs_raw.get("chase", {}).get("in_chase", False)),
                     )
+                    previous_location = params.get("previous_location")
+                    if not should_generate(params["narration"], game_state, previous_location):
+                        log.info("beat_filter: skipping non-visual beat")
+                        _write(writer, req_id, result={"status": "skipped", "reason": "beat_filter"})
+                        continue
+
+                # If narration is provided, use SceneInterpreter for fast rule-based
+                # StageCue extraction, then fall back to LLM subject extraction.
+                if params.get("narration") and not params.get("positive_prompt"):
+                    from sidequest_daemon.scene_interpreter import SceneInterpreter
+                    from sidequest_daemon.types import GameState, Character
+
+                    narrator_text = params["narration"]
+
+                    # Extract documents and strip markers before visual processing
+                    scene_interp = SceneInterpreter()
+                    genre = params.get("genre", "unknown")
+                    doc_events = scene_interp.extract_documents(narrator_text, genre=genre)
+                    if doc_events:
+                        log.info("scene_interpreter: extracted %d document(s)", len(doc_events))
+                        params.setdefault("document_events", [])
+                        for doc in doc_events:
+                            params["document_events"].append(doc.model_dump())
+                    narrator_text = scene_interp.strip_document_markers(narrator_text)
+                    params["narration"] = narrator_text
+
+                    # Try rule-based StageCue extraction (fast, no LLM)
+                    gs_raw = params.get("game_state", {})
+                    interp_state = GameState(
+                        location=gs_raw.get("location", ""),
+                        time_of_day=gs_raw.get("time_of_day", ""),
+                        characters=[Character(name=c.get("name", "")) for c in gs_raw.get("characters", [])],
+                    )
+                    cues = scene_interp.interpret(narrator_text, interp_state)
+                    if cues:
+                        # Use the first cue's structured data instead of raw narration
+                        top_cue = cues[0]
+                        params["subject"] = top_cue.subject
+                        params["mood"] = top_cue.mood
+                        params["tags"] = top_cue.tags
+                        params["tier"] = top_cue.tier.value
+                        log.info(
+                            "scene_interpreter — tier=%s subject=%s",
+                            top_cue.tier.value,
+                            top_cue.subject[:80],
+                        )
+
+                    # Fall back to LLM subject extraction if SceneInterpreter
+                    # didn't produce a subject (or for refinement)
+                    if not params.get("subject"):
+                        from sidequest_daemon.media.subject_extractor import SubjectExtractor
+                        extractor = SubjectExtractor()
+                        extracted = await extractor.extract(params["narration"])
+                        if not extracted or not extracted.get("subject"):
+                            _write(writer, req_id, error={
+                                "code": "EXTRACTION_FAILED",
+                                "message": "SubjectExtractor returned no visual subject from narration. No fallback — refusing to render narrative prose directly.",
+                            })
+                            continue
+                        # Build StageCue-compatible params from extraction
+                        params["subject"] = extracted["subject"]
+                        params["mood"] = extracted.get("mood", "")
+                        params["tags"] = extracted.get("tags", [])
+                        # Override tier if extractor found a better one
+                        extracted_tier = extracted.get("tier", "")
+                        if extracted_tier:
+                            tier_lower = extracted_tier.lower()
+                            if tier_lower in FLUX_TIERS:
+                                params["tier"] = tier_lower
+                        log.info(
+                            "narration_extracted — subject=%s, mood=%s, tier=%s",
+                            extracted["subject"][:80],
+                            extracted.get("mood"),
+                            params.get("tier"),
+                        )
 
                 # If we have visual_style + subject, compose through PromptComposer
                 if params.get("subject") and params.get("art_style"):
@@ -373,6 +437,17 @@ async def _run_daemon(
         os.environ["SIDEQUEST_GENRE_PACKS"] = str(genre_packs)
     pool = WorkerPool(output_dir)
     render_lock = asyncio.Lock()
+
+    # Initialize media pipelines (audio + voice) via factory
+    from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
+    pipeline_factory = MediaPipelineFactory(
+        audio_base_path=genre_packs,
+        enable_tts=True,
+    )
+    # Audio and voice init are deferred until a genre pack is loaded at session start.
+    # The factory is stored on the pool so session handlers can call init_audio/init_voice.
+    pool.pipeline_factory = pipeline_factory
+    log.info("MediaPipelineFactory initialized (audio/voice pipelines deferred until session)")
 
     if warmup:
         target = warmup if isinstance(warmup, str) else "all"

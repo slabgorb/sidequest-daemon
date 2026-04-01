@@ -11,11 +11,7 @@ log = logging.getLogger(__name__)
 
 from sidequest_daemon.renderer.base import Renderer
 from sidequest_daemon.renderer.models import RenderResult, StageCue
-
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from sidequest_daemon.media.cache import SceneCache
+from sidequest_daemon.renderer.stale import is_discardable
 
 
 class RenderQueue:
@@ -96,9 +92,15 @@ class RenderQueue:
                 result = await self._renderer.render(cue)
                 # Suppress on_complete for results that became stale during rendering
                 if cue.turn_id < self._current_turn_id:
-                    log.info("RenderQueue suppressing stale result: tier=%s turn_id=%d", cue.tier, cue.turn_id)
-                    if not future.done():
-                        future.set_result(None)
+                    if is_discardable(result):
+                        log.info("RenderQueue discarding stale result: tier=%s turn_id=%d", cue.tier, cue.turn_id)
+                        if not future.done():
+                            future.set_result(None)
+                    else:
+                        log.info("RenderQueue keeping stale but non-discardable result: tier=%s turn_id=%d", cue.tier, cue.turn_id)
+                        await self._on_complete(result)
+                        if not future.done():
+                            future.set_result(result)
                 else:
                     log.info("RenderQueue cue complete: tier=%s path=%s", cue.tier, result.image_path)
                     await self._on_complete(result)
@@ -109,53 +111,5 @@ class RenderQueue:
                           cue.tier, cue.subject[:60] if cue.subject else "", type(exc).__name__, exc)
                 if not future.done():
                     future.set_result(None)
-            finally:
-                self._queue.task_done()
-
-
-class CachedRenderQueue:
-    """RenderQueue wrapper that checks SceneCache before rendering."""
-
-    def __init__(
-        self,
-        renderer: Renderer,
-        cache: SceneCache,
-        on_complete: Callable[[RenderResult], Awaitable[None]],
-    ) -> None:
-        self._renderer = renderer
-        self._cache = cache
-        self._on_complete = on_complete
-        self._queue: asyncio.Queue[StageCue] = asyncio.Queue()
-        self._task: asyncio.Task[None] | None = None
-
-    async def start(self) -> None:
-        self._task = asyncio.create_task(self._worker())
-
-    async def stop(self) -> None:
-        if self._task:
-            self._task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._task
-            self._task = None
-
-    async def submit(self, cue: StageCue) -> None:
-        await self._queue.put(cue)
-
-    async def _worker(self) -> None:
-        while True:
-            cue = await self._queue.get()
-            try:
-                cached = self._cache.get(cue)
-                if cached is not None:
-                    log.info("RENDER_CACHE: hit for tier=%s subject=%r", cue.tier, cue.subject[:40] if cue.subject else "")
-                    await self._on_complete(cached)
-                else:
-                    log.info("RENDER_CACHE: miss for tier=%s, rendering...", cue.tier)
-                    result = await self._renderer.render(cue)
-                    self._cache.put(cue, result)
-                    await self._on_complete(result)
-            except Exception as exc:
-                log.error("RENDER_FAILED: tier=%s subject=%r error=%s (%s)",
-                          cue.tier, cue.subject[:60] if cue.subject else "", type(exc).__name__, exc)
             finally:
                 self._queue.task_done()

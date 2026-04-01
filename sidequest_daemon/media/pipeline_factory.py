@@ -53,6 +53,7 @@ class MediaPipelineFactory:
         self.voice_router: VoiceRouter | None = None
         self.voice_registry: VoicePresetRegistry | None = None
         self._synthesis_stream: Any = None
+        self.engine_selector: Any = None  # TieredEngineSelector for drama-weight routing
         self.digest_processor: Any = None
 
     def init_audio(self) -> None:
@@ -149,35 +150,52 @@ class MediaPipelineFactory:
         self.voice_router = VoiceRouter(registry=self.voice_registry)
 
         # TTS engine: Kokoro preferred, Piper fallback
+        # TieredEngineSelector routes between low-tier (Piper) and high-tier (Kokoro)
+        # based on drama_weight.
+        kokoro_engine = None
+        piper_engine = None
+
         if self._enable_tts:
             try:
                 from sidequest_daemon.voice.kokoro import KokoroEngine
                 from sidequest_daemon.voice.model_manager import KokoroModelManager
-                from sidequest_daemon.voice.stream import SynthesisStream
 
                 model_manager = KokoroModelManager()
-                engine = KokoroEngine(model_manager=model_manager)
-                self._synthesis_stream = SynthesisStream(
-                    engine, effects_library=self.effects_library
-                )
+                kokoro_engine = KokoroEngine(model_manager=model_manager)
             except Exception as exc:
-                log.warning("Kokoro TTS unavailable, falling back to Piper: %s", exc)
-                try:
-                    from sidequest_daemon.voice.piper import PiperEngine
-                    from sidequest_daemon.voice.stream import SynthesisStream as _SynthStream
+                log.warning("Kokoro TTS unavailable: %s", exc)
 
-                    engine = PiperEngine()
-                    self._synthesis_stream = _SynthStream(
-                        engine, effects_library=self.effects_library
+            try:
+                from sidequest_daemon.voice.piper import PiperEngine
+                piper_engine = PiperEngine()
+            except Exception as piper_exc:
+                log.warning("Piper TTS unavailable: %s", piper_exc)
+
+            # Wire TieredEngineSelector: low_tier=Piper, high_tier=Kokoro
+            from sidequest_daemon.voice.selector import TieredEngineSelector
+
+            primary_engine = kokoro_engine or piper_engine
+            if primary_engine is not None:
+                if piper_engine is not None and kokoro_engine is not None:
+                    self.engine_selector = TieredEngineSelector(
+                        low_tier=piper_engine,
+                        high_tier=kokoro_engine,
                     )
-                except Exception as piper_exc:
-                    log.error(
-                        "VOICE: both Kokoro and Piper TTS failed — voice narration unavailable: %s",
-                        piper_exc,
-                    )
-                    self._synthesis_stream = None
+                    log.info("VOICE: TieredEngineSelector wired (Piper low, Kokoro high)")
+                else:
+                    self.engine_selector = None
+
+                from sidequest_daemon.voice.stream import SynthesisStream
+                self._synthesis_stream = SynthesisStream(
+                    primary_engine, effects_library=self.effects_library
+                )
+            else:
+                log.error("VOICE: both Kokoro and Piper TTS failed — voice narration unavailable")
+                self._synthesis_stream = None
+                self.engine_selector = None
         else:
             self._synthesis_stream = None
+            self.engine_selector = None
 
         # Validate required voice models from genre pack
         if (
@@ -195,3 +213,21 @@ class MediaPipelineFactory:
         from sidequest_daemon.voice.digest import DigestProcessor
 
         self.digest_processor = DigestProcessor()
+
+    def register_npcs(self, npcs: list) -> None:
+        """Assign voice IDs to NPCs and register them in the voice preset registry.
+
+        Wires assign_voices() and register_npc_voices() — call after init_voice()
+        when NPCs are loaded for a session.
+        """
+        if not npcs:
+            return
+
+        from sidequest_daemon.voice.assignment import assign_voices, register_npc_voices
+
+        assign_voices(npcs)
+        log.info("VOICE: assigned voice IDs to %d NPC(s)", len(npcs))
+
+        if self.voice_registry is not None:
+            register_npc_voices(npcs, self.voice_registry)
+            log.info("VOICE: registered %d NPC voice(s) in preset registry", len(npcs))
