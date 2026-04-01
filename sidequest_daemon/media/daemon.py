@@ -305,6 +305,25 @@ async def _handle_client(
                         _write(writer, req_id, result=result)
                     except Exception as e:
                         _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
+            elif method == "embed":
+                # Story 15-7: Generate sentence embeddings for lore fragments
+                text = params.get("text", "")
+                if not text or not text.strip():
+                    _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "embed requires non-empty 'text' field"})
+                    continue
+                try:
+                    import time
+                    start = time.monotonic()
+                    worker = EmbedWorker()
+                    embedding = worker.generate_embedding(text)
+                    latency_ms = int((time.monotonic() - start) * 1000)
+                    _write(writer, req_id, result={
+                        "embedding": embedding,
+                        "model": worker._model_name,
+                        "latency_ms": latency_ms,
+                    })
+                except Exception as e:
+                    _write(writer, req_id, error={"code": "EMBED_FAILED", "message": str(e)})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
