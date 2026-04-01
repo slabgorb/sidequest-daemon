@@ -34,6 +34,36 @@ log = logging.getLogger(__name__)
 FLUX_TIERS = frozenset({"scene_illustration", "portrait", "landscape", "cartography", "text_overlay", "tactical_sketch"})
 MUSIC_TIERS = frozenset({"music"})
 TTS_TIERS = frozenset({"tts"})
+EMBED_TIERS = frozenset({"embed"})
+
+
+class EmbedWorker:
+    """Generates sentence embeddings via sentence-transformers (story 15-7).
+
+    Uses all-MiniLM-L6-v2 for 384-dimensional embeddings — fast and
+    good enough for lore fragment similarity search.
+    """
+
+    def __init__(self) -> None:
+        self._model = None
+        self._model_name = "all-MiniLM-L6-v2"
+
+    def _load_model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self._model_name)
+        return self._model
+
+    def generate_embedding(self, text: str) -> list[float]:
+        """Generate a sentence embedding for the given text.
+
+        Raises ValueError if text is empty — no silent fallbacks.
+        """
+        if not text or not text.strip():
+            raise ValueError("text must not be empty")
+        model = self._load_model()
+        embedding = model.encode(text, convert_to_numpy=True)
+        return [float(v) for v in embedding]
 
 
 class WorkerPool:
