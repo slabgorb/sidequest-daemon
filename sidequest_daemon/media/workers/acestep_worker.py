@@ -35,6 +35,12 @@ class ACEStepWorker:
             )
         sys.path.insert(0, ace_step_path)
 
+        # ACE-Step's dependencies (loguru, etc.) live in its own venv
+        ace_venv_site = Path(ace_step_path) / ".venv" / "lib"
+        for pydir in sorted(ace_venv_site.glob("python*/site-packages")):
+            if str(pydir) not in sys.path:
+                sys.path.insert(1, str(pydir))
+
         from acestep.pipeline_ace_step import ACEStepPipeline
 
         self.pipeline = ACEStepPipeline(
