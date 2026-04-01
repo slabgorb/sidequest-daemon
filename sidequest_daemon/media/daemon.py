@@ -34,6 +34,36 @@ log = logging.getLogger(__name__)
 FLUX_TIERS = frozenset({"scene_illustration", "portrait", "landscape", "cartography", "text_overlay", "tactical_sketch"})
 MUSIC_TIERS = frozenset({"music"})
 TTS_TIERS = frozenset({"tts"})
+EMBED_TIERS = frozenset({"embed"})
+
+
+class EmbedWorker:
+    """Generates sentence embeddings via sentence-transformers (story 15-7).
+
+    Uses all-MiniLM-L6-v2 for 384-dimensional embeddings — fast and
+    good enough for lore fragment similarity search.
+    """
+
+    def __init__(self) -> None:
+        self._model = None
+        self._model_name = "all-MiniLM-L6-v2"
+
+    def _load_model(self):
+        if self._model is None:
+            from sentence_transformers import SentenceTransformer
+            self._model = SentenceTransformer(self._model_name)
+        return self._model
+
+    def generate_embedding(self, text: str) -> list[float]:
+        """Generate a sentence embedding for the given text.
+
+        Raises ValueError if text is empty — no silent fallbacks.
+        """
+        if not text or not text.strip():
+            raise ValueError("text must not be empty")
+        model = self._load_model()
+        embedding = model.encode(text, convert_to_numpy=True)
+        return [float(v) for v in embedding]
 
 
 class WorkerPool:
@@ -275,6 +305,25 @@ async def _handle_client(
                         _write(writer, req_id, result=result)
                     except Exception as e:
                         _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
+            elif method == "embed":
+                # Story 15-7: Generate sentence embeddings for lore fragments
+                text = params.get("text", "")
+                if not text or not text.strip():
+                    _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "embed requires non-empty 'text' field"})
+                    continue
+                try:
+                    import time
+                    start = time.monotonic()
+                    worker = EmbedWorker()
+                    embedding = worker.generate_embedding(text)
+                    latency_ms = int((time.monotonic() - start) * 1000)
+                    _write(writer, req_id, result={
+                        "embedding": embedding,
+                        "model": worker._model_name,
+                        "latency_ms": latency_ms,
+                    })
+                except Exception as e:
+                    _write(writer, req_id, error={"code": "EMBED_FAILED", "message": str(e)})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
