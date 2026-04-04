@@ -15,13 +15,5 @@ class SynthesisFailedError(SynthesisError):
     """Synthesis operation failed."""
 
 
-class UnsupportedLanguageError(SynthesisError):
-    """Requested language is not supported by the engine."""
-
-
-class TextNormalizationError(SynthesisError):
-    """Text normalization failed."""
-
-
 class VoicePresetError(SynthesisError):
     """Invalid or unknown voice preset."""
