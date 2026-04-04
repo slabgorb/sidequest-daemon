@@ -56,30 +56,6 @@ class GameState:
 
 
 # ---------------------------------------------------------------------------
-# GenrePack protocol — replaces sidequest.genre.models.GenrePack for runtime
-# ---------------------------------------------------------------------------
-
-@runtime_checkable
-class GenrePackProtocol(Protocol):
-    """Minimal interface the daemon needs from a genre pack."""
-
-    @property
-    def audio(self) -> Any: ...
-
-    @property
-    def visual_style(self) -> Any: ...
-
-    @property
-    def voice_presets(self) -> Any: ...
-
-    @property
-    def required_voice_models(self) -> list[str]: ...
-
-    @property
-    def pack_dir(self) -> Any: ...
-
-
-# ---------------------------------------------------------------------------
 # NPC protocol — replaces sidequest.game.npc.NPC
 # ---------------------------------------------------------------------------
 
