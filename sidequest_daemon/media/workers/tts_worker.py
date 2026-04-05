@@ -69,6 +69,8 @@ class TTSWorker:
         voice_name = params.get("voice", params.get("voice_id", "narrator"))
         voice_id = None
         speed = params.get("speed", 1.0)
+        pitch = params.get("pitch", 1.0)
+        effects = params.get("effects", [])
 
         # Resolve voice_id: if it's numeric, use it directly
         try:
@@ -80,6 +82,8 @@ class TTSWorker:
         preset = VoicePreset(
             name=preset_name,
             rate=float(speed),
+            pitch=float(pitch),
+            effects=effects,
             voice_id=voice_id,
         )
 
@@ -89,6 +93,33 @@ class TTSWorker:
             raise RuntimeError("TTS engine not loaded — call load_model() first")
 
         segment = _run_async(self._engine.synthesize(text, preset))
+
+        # Apply pitch shift and audio effects from creature_voice_presets.
+        # Pitch != 1.0 is applied as a PitchShift effect prepended to the chain.
+        if pitch != 1.0 or effects:
+            import math
+
+            import numpy as np
+
+            from sidequest_daemon.voice.effects import PedalboardEffectsChain
+
+            effect_defs = list(effects)
+            if pitch != 1.0:
+                semitones = 12.0 * math.log2(pitch)
+                effect_defs.insert(0, {"type": "pitch_shift", "params": {"semitones": semitones}})
+
+            chain = PedalboardEffectsChain.from_effect_list(effect_defs)
+            pcm = np.frombuffer(segment.data, dtype=np.int16).astype(np.float32) / 32768.0
+            processed = chain.process(pcm, sample_rate=segment.sample_rate)
+            processed = np.clip(processed, -1.0, 1.0)
+            segment_data = (processed * 32767).astype(np.int16).tobytes()
+            segment = type(segment)(
+                data=segment_data,
+                sample_rate=segment.sample_rate,
+                channels=segment.channels,
+                format=segment.format,
+            )
+
         elapsed_ms = int((time.monotonic() - start) * 1000)
 
         # Optionally write to file for debugging / caching

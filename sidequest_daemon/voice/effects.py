@@ -99,6 +99,11 @@ class PedalboardEffectsChain:
         return {"effects": serialized}
 
     @classmethod
+    def from_effect_list(cls, effects: list[dict[str, Any]]) -> PedalboardEffectsChain:
+        """Build a chain from a flat list of effect dicts (as sent by Rust TtsParams)."""
+        return cls.from_dict({"effects": effects})
+
+    @classmethod
     def from_dict(cls, config: dict[str, Any]) -> PedalboardEffectsChain:
         """Reconstruct a chain from a serialized dictionary."""
         effects: list[Any] = []
