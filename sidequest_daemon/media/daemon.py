@@ -388,6 +388,9 @@ async def _handle_client(
                     })
                 except Exception as e:
                     _write(writer, req_id, error={"code": "EMBED_FAILED", "message": str(e)})
+            elif method == "list_voices":
+                from sidequest_daemon.voice.kokoro import KOKORO_VOICES
+                _write(writer, req_id, result={"voices": list(KOKORO_VOICES)})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
