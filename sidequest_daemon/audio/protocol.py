@@ -1,28 +1,15 @@
-"""Audio backend protocol and MusicDirectorDecision model.
+"""Audio backend protocol.
 
 Story 5-1: AudioCue model + AudioConfig genre pack schema
 
 AudioBackend: Abstract base class for audio playback backends.
-MusicDirectorDecision: Structured output from the Music Director agent.
 """
 
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from pydantic import BaseModel
-
-from sidequest_daemon.audio.models import AudioCue, AudioLane, AudioResult, MoodCategory
-
-
-class MusicDirectorDecision(BaseModel):
-    """Structured mood decision from the Music Director Claude agent."""
-
-    mood: MoodCategory
-    intensity: float
-    transition: str = "crossfade"
-    sfx_triggers: list[str] = []
-    reasoning: str = ""
+from sidequest_daemon.audio.models import AudioCue, AudioLane, AudioResult
 
 
 class AudioBackend(ABC):

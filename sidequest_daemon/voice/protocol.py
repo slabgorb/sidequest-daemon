@@ -57,7 +57,7 @@ class SynthesisEngine(ABC):
     @property
     @abstractmethod
     def name(self) -> str:
-        """Engine identifier (e.g. 'piper', 'xtts')."""
+        """Engine identifier (e.g. 'piper', 'kokoro')."""
         ...
 
     @property
