@@ -95,10 +95,8 @@ class ModelMemoryManager:
 
     def _estimate_memory(self, backend: AudioBackend) -> int:
         """Estimate memory for backends without _memory_bytes attr."""
-        from sidequest_daemon.audio.musicgen_backend import _MODEL_MEMORY_BYTES
-
-        if backend.name == "musicgen":
-            return _MODEL_MEMORY_BYTES
+        # MusicGen backend removed (superseded by pre-recorded tracks).
+        # No remaining backends need memory estimation.
         return 0
 
     def status(self) -> list[dict]:
