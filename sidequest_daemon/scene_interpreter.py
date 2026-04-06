@@ -188,19 +188,6 @@ def _strip_abstractions(text: str) -> str:
     return result.strip()
 
 
-def _extract_visual_nouns(text: str) -> str:
-    """Extract concrete visual nouns and adjectives from text."""
-    words = re.findall(r'\b[a-zA-Z]+\b', text)
-    visual = [w for w in words if w.lower() not in _NON_VISUAL_WORDS and len(w) > 2]
-    seen: set[str] = set()
-    unique: list[str] = []
-    for w in visual:
-        low = w.lower()
-        if low not in seen:
-            seen.add(low)
-            unique.append(low)
-    return ', '.join(unique)
-
 
 def _distill_visual(text: str) -> str:
     """Chain visual distillation: mechanics -> dialogue -> abstractions -> cleanup."""
