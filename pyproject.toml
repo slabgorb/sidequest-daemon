@@ -1,7 +1,7 @@
 [project]
 name = "sidequest-daemon"
 version = "0.1.0"
-description = "SideQuest media services — image generation, TTS, and audio playback"
+description = "SideQuest media services — image generation and audio playback"
 requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
