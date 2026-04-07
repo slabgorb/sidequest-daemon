@@ -12,7 +12,6 @@ dependencies = [
     "safetensors>=0.4",
     "pygame-ce>=2.5",
     "numpy>=1.24",
-    "piper-tts>=1.2",
     "pedalboard>=0.9",
     "scipy>=1.11",
     "sounddevice>=0.4",
