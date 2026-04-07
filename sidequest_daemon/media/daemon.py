@@ -70,9 +70,7 @@ class WorkerPool:
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
         self._flux = None
-        self._acestep = None
         self._flux_loaded = False
-        self._acestep_loaded = False
         self.pipeline_factory = None  # Set by _run_daemon after init
 
         # GPU memory coordinator — manages 80GB shared budget across backends
@@ -98,22 +96,6 @@ class WorkerPool:
         if not self._flux_loaded:
             self.warm_up_flux()
 
-    def warm_up_acestep(self) -> dict:
-        """Load and warm up ACE-Step music worker."""
-        if self._acestep_loaded:
-            return {"worker": "acestep", "status": "already_warm", "warmup_ms": 0}
-        from sidequest_daemon.media.workers.acestep_worker import ACEStepWorker
-        self._acestep = ACEStepWorker(self.output_dir / "acestep")
-        self._acestep.load_model()
-        result = self._acestep.warm_up()
-        self._acestep_loaded = True
-        log.info("ACE-Step warm (%.1fs)", result.get("warmup_ms", 0) / 1000)
-        return {"worker": "acestep", "status": "warm", **result}
-
-    def _ensure_acestep(self) -> None:
-        if not self._acestep_loaded:
-            self.warm_up_acestep()
-
     def render(self, params: dict) -> dict:
         """Route render request to the appropriate worker by tier."""
         tier = params.get("tier", "")
@@ -127,7 +109,6 @@ class WorkerPool:
         """Return current worker status."""
         return {
             "flux": "warm" if self._flux_loaded else "cold",
-            "acestep": "warm" if self._acestep_loaded else "cold",
             "supported_tiers": {
                 "flux": sorted(FLUX_TIERS),
             },
@@ -139,10 +120,6 @@ class WorkerPool:
             self._flux.cleanup()
             self._flux = None
             self._flux_loaded = False
-        if self._acestep is not None:
-            self._acestep.cleanup()
-            self._acestep = None
-            self._acestep_loaded = False
 
 
 async def _handle_client(
@@ -193,8 +170,6 @@ async def _handle_client(
                     results = {}
                     if target in ("all", "flux"):
                         results["flux"] = await asyncio.to_thread(pool.warm_up_flux)
-                    if target in ("all", "acestep"):
-                        results["acestep"] = await asyncio.to_thread(pool.warm_up_acestep)
                     _write(writer, req_id, result={"status": "warm", "workers": results})
                 except Exception as e:
                     _write(writer, req_id, error={"code": "WARMUP_FAILED", "message": str(e)})
@@ -391,7 +366,7 @@ async def _run_daemon(
 ) -> None:
     """Start the daemon server.
 
-    warmup can be: False, True/"all", "flux", "tts"
+    warmup can be: False, True/"all", "flux"
     """
     if output_dir is None:
         env_dir = os.environ.get("SIDEQUEST_OUTPUT_DIR")
@@ -403,7 +378,7 @@ async def _run_daemon(
     pool = WorkerPool(output_dir)
     render_lock = asyncio.Lock()
 
-    # Initialize media pipelines (audio + voice) via factory
+    # Initialize audio pipeline via factory
     from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
     pipeline_factory = MediaPipelineFactory(
         audio_base_path=genre_packs,
@@ -418,7 +393,6 @@ async def _run_daemon(
         if target in ("all", "flux"):
             log.info("Pre-loading Flux model...")
             await asyncio.to_thread(pool.warm_up_flux)
-        # ACE-Step removed — pre-recorded tracks used instead of procedural generation
         log.info("Models warm and ready")
 
     # Clean up stale socket
@@ -502,7 +476,6 @@ async def send_status() -> None:
         if "result" in resp:
             status = resp["result"]
             print(f"Flux: {status.get('flux', 'unknown')}")
-            print(f"ACE-Step: {status.get('acestep', 'unknown')}")
             tiers = status.get("supported_tiers", {})
             print(f"Flux tiers: {', '.join(tiers.get('flux', []))}")
         else:
