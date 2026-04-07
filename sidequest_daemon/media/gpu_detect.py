@@ -1,4 +1,4 @@
-"""GPU availability detection — CUDA → MPS → none fallback chain."""
+"""GPU availability detection — MLX for Apple Silicon."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from typing import Literal
 
 logger = logging.getLogger(__name__)
 
-GpuBackend = Literal["cuda", "mps", "none"]
+GpuBackend = Literal["mlx", "none"]
 
 
 @dataclass
@@ -21,28 +21,19 @@ class GpuInfo:
 
 
 def detect_gpu() -> GpuInfo:
-    """Detect GPU availability: CUDA first, then MPS, then none."""
+    """Detect GPU availability via MLX on Apple Silicon."""
     try:
-        import torch
+        import mlx.core as mx
     except (ImportError, ModuleNotFoundError):
-        logger.info("torch not installed — no GPU detection possible")
-        return GpuInfo(available=False, backend="none", device_name="")
-
-    # torch may be None in sys.modules (patched out)
-    if torch is None:
+        logger.info("mlx not installed — no GPU detection possible")
         return GpuInfo(available=False, backend="none", device_name="")
 
     try:
-        if torch.cuda.is_available():
-            device_name = torch.cuda.get_device_name(0)
-            logger.info("CUDA GPU detected: %s", device_name)
-            return GpuInfo(available=True, backend="cuda", device_name=device_name)
-
-        if torch.backends.mps.is_available():
-            logger.info("Apple MPS detected")
-            return GpuInfo(available=True, backend="mps", device_name="Apple Silicon")
-
+        device = mx.default_device()
+        device_name = f"Apple Silicon ({device})"
+        logger.info("MLX detected: %s", device_name)
+        return GpuInfo(available=True, backend="mlx", device_name=device_name)
     except Exception as exc:
-        logger.warning("GPU detection failed: %s", exc)
+        logger.warning("MLX detection failed: %s", exc)
 
     return GpuInfo(available=False, backend="none", device_name="")
