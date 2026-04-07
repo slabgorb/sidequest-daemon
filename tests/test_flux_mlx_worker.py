@@ -520,7 +520,6 @@ class TestMainProtocol:
     """The module must have a main() function for subprocess JSON-line protocol."""
 
     def test_has_main_function(self, mock_mflux):
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
         import sidequest_daemon.media.workers.flux_mlx_worker as mod
         assert callable(getattr(mod, "main", None)), (
             "flux_mlx_worker must have a main() entry point for subprocess protocol"
