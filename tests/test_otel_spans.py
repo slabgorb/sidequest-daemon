@@ -14,44 +14,27 @@ from unittest.mock import MagicMock, patch
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export.in_memory import InMemorySpanExporter
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
 
-@pytest.fixture()
-def otel_spans():
-    """Set up an in-memory OTEL exporter and return (exporter, tracer_provider).
+@pytest.fixture(autouse=False)
+def otel_exporter(monkeypatch):
+    """Set up an in-memory OTEL span exporter for testing.
 
-    Resets the global tracer provider for each test to ensure clean state.
+    Uses monkeypatch to reset the global TracerProvider cleanly per test,
+    avoiding the 'Overriding of current TracerProvider is not allowed' warning.
     """
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(
-        trace.get_tracer_provider()
-        .__class__.__module__  # just need the processor
-        and __import__(
-            "opentelemetry.sdk.trace.export",
-            fromlist=["SimpleSpanProcessor"],
-        ).SimpleSpanProcessor(exporter)
-    )
-    # Set as global provider for this test
-    trace.set_tracer_provider(provider)
-    yield exporter
-    # Clean up
-    provider.shutdown()
-
-
-@pytest.fixture()
-def otel_exporter():
-    """Simpler fixture: returns (exporter, provider) for direct use."""
     from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 
     exporter = InMemorySpanExporter()
     provider = TracerProvider()
     provider.add_span_processor(SimpleSpanProcessor(exporter))
+    # Reset the global provider flag so set_tracer_provider works
+    monkeypatch.setattr(trace, "_TRACER_PROVIDER_SET_ONCE", trace._TRACER_PROVIDER_SET_ONCE.__class__())
     trace.set_tracer_provider(provider)
     yield exporter
     exporter.clear()
