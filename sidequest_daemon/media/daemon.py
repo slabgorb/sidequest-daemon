@@ -1,11 +1,11 @@
-"""sidequest-renderer daemon — persistent multi-model process on Unix domain socket.
+"""sidequest-renderer daemon — persistent Flux image renderer on Unix domain socket.
 
-Hosts Flux, ACE-Step, and TTS workers in a single process with all models
-pre-loaded. Serves render requests over a Unix domain socket, routing to
-the appropriate worker by tier. Stays warm between sessions.
+Hosts the Flux image worker in a single process with the model pre-loaded.
+Serves render requests over a Unix domain socket, routing by tier.
+Stays warm between sessions.
 
 Usage:
-    sidequest-renderer                          # start daemon (loads all models)
+    sidequest-renderer                          # start daemon (loads Flux)
     sidequest-renderer --warmup=flux            # start + load Flux only
     sidequest-renderer --no-warmup              # start without loading models (testing)
     sidequest-renderer --shutdown               # send shutdown to running daemon
@@ -32,8 +32,6 @@ log = logging.getLogger(__name__)
 
 # Tier → worker routing.
 FLUX_TIERS = frozenset({"scene_illustration", "portrait", "landscape", "cartography", "text_overlay", "tactical_sketch"})
-MUSIC_TIERS = frozenset({"music"})
-TTS_TIERS = frozenset({"tts"})
 EMBED_TIERS = frozenset({"embed"})
 
 
@@ -67,16 +65,14 @@ class EmbedWorker:
 
 
 class WorkerPool:
-    """Manages Flux, ACE-Step, and TTS workers with lazy or eager loading."""
+    """Manages the Flux image worker with lazy or eager loading."""
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
         self._flux = None
         self._acestep = None
-        self._tts = None
         self._flux_loaded = False
         self._acestep_loaded = False
-        self._tts_loaded = False
         self.pipeline_factory = None  # Set by _run_daemon after init
 
         # GPU memory coordinator — manages 80GB shared budget across backends
@@ -114,36 +110,14 @@ class WorkerPool:
         log.info("ACE-Step warm (%.1fs)", result.get("warmup_ms", 0) / 1000)
         return {"worker": "acestep", "status": "warm", **result}
 
-    def warm_up_tts(self) -> dict:
-        """Load and warm up TTS worker."""
-        if self._tts_loaded:
-            return {"worker": "tts", "status": "already_warm", "warmup_ms": 0}
-        from sidequest_daemon.media.workers.tts_worker import TTSWorker
-        self._tts = TTSWorker(self.output_dir / "tts")
-        self._tts.load_model()
-        result = self._tts.warm_up()
-        self._tts_loaded = True
-        log.info("TTS warm (%.1fs)", result.get("warmup_ms", 0) / 1000)
-        return {"worker": "tts", "status": "warm", **result}
-
     def _ensure_acestep(self) -> None:
         if not self._acestep_loaded:
             self.warm_up_acestep()
 
-    def _ensure_tts(self) -> None:
-        if not self._tts_loaded:
-            self.warm_up_tts()
-
     def render(self, params: dict) -> dict:
         """Route render request to the appropriate worker by tier."""
         tier = params.get("tier", "")
-        if tier in MUSIC_TIERS:
-            self._ensure_acestep()
-            return self._acestep.render(params)
-        elif tier in TTS_TIERS:
-            self._ensure_tts()
-            return self._tts.render(params)
-        elif tier in FLUX_TIERS:
+        if tier in FLUX_TIERS:
             self._ensure_flux()
             return self._flux.render(params)
         else:
@@ -154,11 +128,8 @@ class WorkerPool:
         return {
             "flux": "warm" if self._flux_loaded else "cold",
             "acestep": "warm" if self._acestep_loaded else "cold",
-            "tts": "warm" if self._tts_loaded else "cold",
             "supported_tiers": {
                 "flux": sorted(FLUX_TIERS),
-                "acestep": sorted(MUSIC_TIERS),
-                "tts": sorted(TTS_TIERS),
             },
         }
 
@@ -172,10 +143,6 @@ class WorkerPool:
             self._acestep.cleanup()
             self._acestep = None
             self._acestep_loaded = False
-        if self._tts is not None:
-            self._tts.cleanup()
-            self._tts = None
-            self._tts_loaded = False
 
 
 async def _handle_client(
@@ -228,8 +195,6 @@ async def _handle_client(
                         results["flux"] = await asyncio.to_thread(pool.warm_up_flux)
                     if target in ("all", "acestep"):
                         results["acestep"] = await asyncio.to_thread(pool.warm_up_acestep)
-                    if target in ("all", "tts"):
-                        results["tts"] = await asyncio.to_thread(pool.warm_up_tts)
                     _write(writer, req_id, result={"status": "warm", "workers": results})
                 except Exception as e:
                     _write(writer, req_id, error={"code": "WARMUP_FAILED", "message": str(e)})
@@ -388,9 +353,6 @@ async def _handle_client(
                     })
                 except Exception as e:
                     _write(writer, req_id, error={"code": "EMBED_FAILED", "message": str(e)})
-            elif method == "list_voices":
-                from sidequest_daemon.voice.kokoro import KOKORO_VOICES
-                _write(writer, req_id, result={"voices": list(KOKORO_VOICES)})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
@@ -445,12 +407,11 @@ async def _run_daemon(
     from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
     pipeline_factory = MediaPipelineFactory(
         audio_base_path=genre_packs,
-        enable_tts=True,
     )
-    # Audio and voice init are deferred until a genre pack is loaded at session start.
-    # The factory is stored on the pool so session handlers can call init_audio/init_voice.
+    # Audio init is deferred until a genre pack is loaded at session start.
+    # The factory is stored on the pool so session handlers can call init_audio.
     pool.pipeline_factory = pipeline_factory
-    log.info("MediaPipelineFactory initialized (audio/voice pipelines deferred until session)")
+    log.info("MediaPipelineFactory initialized (audio pipeline deferred until session)")
 
     if warmup:
         target = warmup if isinstance(warmup, str) else "all"
@@ -458,9 +419,6 @@ async def _run_daemon(
             log.info("Pre-loading Flux model...")
             await asyncio.to_thread(pool.warm_up_flux)
         # ACE-Step removed — pre-recorded tracks used instead of procedural generation
-        if target in ("all", "tts"):
-            log.info("Pre-loading TTS model...")
-            await asyncio.to_thread(pool.warm_up_tts)
         log.info("Models warm and ready")
 
     # Clean up stale socket
@@ -545,11 +503,8 @@ async def send_status() -> None:
             status = resp["result"]
             print(f"Flux: {status.get('flux', 'unknown')}")
             print(f"ACE-Step: {status.get('acestep', 'unknown')}")
-            print(f"TTS: {status.get('tts', 'unknown')}")
             tiers = status.get("supported_tiers", {})
             print(f"Flux tiers: {', '.join(tiers.get('flux', []))}")
-            print(f"ACE-Step tiers: {', '.join(tiers.get('acestep', []))}")
-            print(f"TTS tiers: {', '.join(tiers.get('tts', []))}")
         else:
             print(f"Error: {resp.get('error', resp)}")
         writer.close()
