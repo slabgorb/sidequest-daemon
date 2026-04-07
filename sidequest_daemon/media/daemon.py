@@ -81,8 +81,8 @@ class WorkerPool:
         """Load and warm up Flux worker (both schnell and dev variants)."""
         if self._flux_loaded:
             return {"worker": "flux", "status": "already_warm", "warmup_ms": 0}
-        from sidequest_daemon.media.workers.flux_worker import FluxWorker
-        self._flux = FluxWorker(self.output_dir / "flux")
+        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
+        self._flux = FluxMLXWorker(self.output_dir / "flux")
         log.info("Loading Flux schnell (text overlays)...")
         self._flux.load_model("schnell")
         log.info("Loading Flux dev (cartography)...")
