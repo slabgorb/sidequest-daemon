@@ -16,6 +16,8 @@ import time
 import uuid
 from pathlib import Path
 
+from opentelemetry import trace
+
 log = logging.getLogger(__name__)
 
 
@@ -76,10 +78,13 @@ class FluxMLXWorker:
 
     def load_model(self, variant: str = "schnell") -> None:
         """Load a Flux model variant via mflux (MLX native)."""
-        from mflux.models.flux.variants.txt2img.flux import Flux1
+        tracer = trace.get_tracer("sidequest_daemon.media.workers.flux_mlx_worker")
+        with tracer.start_as_current_span("flux_mlx.load_model") as span:
+            span.set_attribute("model.variant", variant)
+            from mflux.models.flux.variants.txt2img.flux import Flux1
 
-        self.models[variant] = Flux1.from_name(model_name=variant)
-        self._active_variant = variant
+            self.models[variant] = Flux1.from_name(model_name=variant)
+            self._active_variant = variant
 
     def _ensure_variant(self, variant: str) -> None:
         """Lazy-load a variant if not already loaded."""
@@ -88,57 +93,74 @@ class FluxMLXWorker:
 
     def warm_up(self) -> dict:
         """MLX graph compilation via schnell dummy generation."""
-        start = time.monotonic()
+        tracer = trace.get_tracer("sidequest_daemon.media.workers.flux_mlx_worker")
+        with tracer.start_as_current_span("flux_mlx.warm_up") as span:
+            start = time.monotonic()
 
-        self.models["schnell"].generate(
-            prompt="black",
-            steps=1,
-            guidance=0.0,
-            width=512,
-            height=512,
-            seed=0,
-        )
+            self.models["schnell"].generate(
+                prompt="black",
+                steps=1,
+                guidance=0.0,
+                width=512,
+                height=512,
+                seed=0,
+            )
 
-        elapsed_ms = int((time.monotonic() - start) * 1000)
-        return {"warmup_ms": elapsed_ms}
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            span.set_attribute("warmup.elapsed_ms", elapsed_ms)
+            return {"warmup_ms": elapsed_ms}
 
     def render(self, params: dict) -> dict:
         """Generate image from StageCue params. Returns result dict."""
-        tier_name = params.get("tier", "")
-        if tier_name not in self.TIER_CONFIGS:
-            raise ValueError(f"Unsupported tier: {tier_name!r}")
+        tracer = trace.get_tracer("sidequest_daemon.media.workers.flux_mlx_worker")
+        with tracer.start_as_current_span("flux_mlx.render") as span:
+            try:
+                tier_name = params.get("tier", "")
+                if tier_name not in self.TIER_CONFIGS:
+                    raise ValueError(f"Unsupported tier: {tier_name!r}")
 
-        tier_cfg = self.TIER_CONFIGS[tier_name]
-        variant = tier_cfg["model"]
-        self._ensure_variant(variant)
+                tier_cfg = self.TIER_CONFIGS[tier_name]
+                variant = tier_cfg["model"]
+                self._ensure_variant(variant)
 
-        prompt = self._compose_prompt(params)
-        seed = params.get("seed", 0)
+                prompt = self._compose_prompt(params)
+                seed = params.get("seed", 0)
 
-        log.info("FLUX MLX RENDER [%s] seed=%s", tier_name, seed)
-        log.info("  prompt: %s", prompt[:150])
+                span.set_attribute("render.tier", tier_name)
+                span.set_attribute("render.seed", seed)
+                span.set_attribute("render.variant", variant)
+                span.set_attribute("render.width", tier_cfg["w"])
+                span.set_attribute("render.height", tier_cfg["h"])
 
-        start = time.monotonic()
-        image = self.models[variant].generate(
-            prompt=prompt,
-            steps=tier_cfg["steps"],
-            guidance=tier_cfg["guidance"],
-            width=tier_cfg["w"],
-            height=tier_cfg["h"],
-            seed=seed,
-        )
-        elapsed_ms = int((time.monotonic() - start) * 1000)
+                log.info("FLUX MLX RENDER [%s] seed=%s", tier_name, seed)
+                log.info("  prompt: %s", prompt[:150])
 
-        filename = f"render_{uuid.uuid4().hex[:8]}.png"
-        image_path = self.output_dir / filename
-        image.save(str(image_path))
+                start = time.monotonic()
+                image = self.models[variant].generate(
+                    prompt=prompt,
+                    steps=tier_cfg["steps"],
+                    guidance=tier_cfg["guidance"],
+                    width=tier_cfg["w"],
+                    height=tier_cfg["h"],
+                    seed=seed,
+                )
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                span.set_attribute("render.elapsed_ms", elapsed_ms)
 
-        return {
-            "image_url": str(image_path),
-            "width": tier_cfg["w"],
-            "height": tier_cfg["h"],
-            "elapsed_ms": elapsed_ms,
-        }
+                filename = f"render_{uuid.uuid4().hex[:8]}.png"
+                image_path = self.output_dir / filename
+                image.save(str(image_path))
+
+                return {
+                    "image_url": str(image_path),
+                    "width": tier_cfg["w"],
+                    "height": tier_cfg["h"],
+                    "elapsed_ms": elapsed_ms,
+                }
+            except Exception as exc:
+                span.set_status(trace.StatusCode.ERROR, str(exc))
+                span.record_exception(exc)
+                raise
 
     def _compose_prompt(self, params: dict) -> str:
         """Build positive prompt for Flux.
@@ -177,15 +199,15 @@ class FluxMLXWorker:
         if not parts:
             raise ValueError(
                 "No prompt content: params has no positive_prompt, prompt, subject, or tags. "
-                "Refusing to render without art direction."
+                f"Params: {params}"
             )
+
         return ", ".join(parts)
 
     def cleanup(self) -> None:
-        """Release all loaded models."""
+        """Unload models, free GPU memory."""
         self.models.clear()
         self._active_variant = None
-
 
 def _respond(
     req_id: str, *, result: dict | None = None, error: dict | None = None
