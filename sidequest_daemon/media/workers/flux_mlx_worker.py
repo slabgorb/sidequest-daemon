@@ -97,7 +97,7 @@ class FluxMLXWorker:
         with tracer.start_as_current_span("flux_mlx.warm_up") as span:
             start = time.monotonic()
 
-            self.models["schnell"].generate(
+            self.models["schnell"].generate_image(
                 prompt="black",
                 steps=1,
                 guidance=0.0,
@@ -110,6 +110,25 @@ class FluxMLXWorker:
             span.set_attribute("warmup.elapsed_ms", elapsed_ms)
             return {"warmup_ms": elapsed_ms}
 
+    def _build_lora_model(self, variant: str, lora_path: str, lora_scale: float) -> object:
+        """Construct a Flux1 instance with LoRA weights.
+
+        Uses Flux1(model_config=..., lora_paths=..., lora_scales=...) because
+        Flux1.from_name() does not accept LoRA parameters.
+        """
+        from mflux.models.flux.variants.txt2img.flux import Flux1
+        from mflux.models.common.config.model_config import ModelConfig
+
+        config_factory = {"dev": ModelConfig.dev, "schnell": ModelConfig.schnell}
+        if variant not in config_factory:
+            raise ValueError(f"Unknown variant for LoRA: {variant!r}")
+
+        return Flux1(
+            model_config=config_factory[variant](),
+            lora_paths=[lora_path],
+            lora_scales=[lora_scale],
+        )
+
     def render(self, params: dict) -> dict:
         """Generate image from StageCue params. Returns result dict."""
         tracer = trace.get_tracer("sidequest_daemon.media.workers.flux_mlx_worker")
@@ -121,10 +140,11 @@ class FluxMLXWorker:
 
                 tier_cfg = self.TIER_CONFIGS[tier_name]
                 variant = tier_cfg["model"]
-                self._ensure_variant(variant)
 
                 prompt = self._compose_prompt(params)
                 seed = params.get("seed", 0)
+                lora_path = params.get("lora_path")
+                lora_scale = params.get("lora_scale", 1.0)
 
                 span.set_attribute("render.tier", tier_name)
                 span.set_attribute("render.seed", seed)
@@ -132,11 +152,23 @@ class FluxMLXWorker:
                 span.set_attribute("render.width", tier_cfg["w"])
                 span.set_attribute("render.height", tier_cfg["h"])
 
-                log.info("FLUX MLX RENDER [%s] seed=%s", tier_name, seed)
+                if lora_path:
+                    span.set_attribute("render.lora_path", lora_path)
+                    span.set_attribute("render.lora_scale", lora_scale)
+                    log.info(
+                        "FLUX MLX RENDER [%s] seed=%s lora=%s scale=%s",
+                        tier_name, seed, lora_path, lora_scale,
+                    )
+                    model = self._build_lora_model(variant, lora_path, lora_scale)
+                else:
+                    log.info("FLUX MLX RENDER [%s] seed=%s", tier_name, seed)
+                    self._ensure_variant(variant)
+                    model = self.models[variant]
+
                 log.info("  prompt: %s", prompt[:150])
 
                 start = time.monotonic()
-                image = self.models[variant].generate(
+                image = model.generate_image(
                     prompt=prompt,
                     steps=tier_cfg["steps"],
                     guidance=tier_cfg["guidance"],
