@@ -227,7 +227,7 @@ class TestRender:
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
 
         mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_image
+        mock_instance.generate_image.return_value = mock_image
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
@@ -273,7 +273,7 @@ class TestRender:
             "positive_prompt": "title card",
             "seed": 0,
         })
-        call_kwargs = mock_inst.generate.call_args[1]
+        call_kwargs = mock_inst.generate_image.call_args[1]
         assert call_kwargs["steps"] == 4
 
     def test_render_passes_correct_dimensions(self, tmp_path, mock_mflux, mock_pil_image):
@@ -284,7 +284,7 @@ class TestRender:
             "positive_prompt": "world map",
             "seed": 0,
         })
-        call_kwargs = mock_inst.generate.call_args[1]
+        call_kwargs = mock_inst.generate_image.call_args[1]
         assert call_kwargs["width"] == 1024
         assert call_kwargs["height"] == 1024
 
@@ -295,7 +295,7 @@ class TestRender:
             "positive_prompt": "a castle",
             "seed": 12345,
         })
-        call_kwargs = mock_inst.generate.call_args[1]
+        call_kwargs = mock_inst.generate_image.call_args[1]
         assert call_kwargs["seed"] == 12345
 
     def test_render_passes_guidance(self, tmp_path, mock_mflux, mock_pil_image):
@@ -305,7 +305,7 @@ class TestRender:
             "positive_prompt": "a tower",
             "seed": 0,
         })
-        call_kwargs = mock_inst.generate.call_args[1]
+        call_kwargs = mock_inst.generate_image.call_args[1]
         assert call_kwargs["guidance"] == 3.5
 
     def test_render_saves_image_to_output_dir(self, tmp_path, mock_mflux, mock_pil_image):
@@ -346,7 +346,7 @@ class TestErrorHandling:
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
 
         mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
+        mock_instance.generate_image.return_value = mock_pil_image
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
@@ -366,7 +366,7 @@ class TestPromptComposition:
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
 
         mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
+        mock_instance.generate_image.return_value = mock_pil_image
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
@@ -376,14 +376,14 @@ class TestPromptComposition:
             "positive_prompt": "a specific composed prompt",
             "seed": 0,
         })
-        call_kwargs = mock_instance.generate.call_args[1]
+        call_kwargs = mock_instance.generate_image.call_args[1]
         assert call_kwargs["prompt"] == "a specific composed prompt"
 
     def test_subject_mood_location_composed(self, tmp_path, mock_mflux, mock_pil_image):
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
 
         mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
+        mock_instance.generate_image.return_value = mock_pil_image
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
@@ -395,7 +395,7 @@ class TestPromptComposition:
             "location": "mountain peak",
             "seed": 0,
         })
-        call_kwargs = mock_instance.generate.call_args[1]
+        call_kwargs = mock_instance.generate_image.call_args[1]
         prompt = call_kwargs["prompt"]
         assert "a dragon" in prompt
         assert "ominous" in prompt
@@ -405,7 +405,7 @@ class TestPromptComposition:
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
 
         mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
+        mock_instance.generate_image.return_value = mock_pil_image
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
@@ -415,7 +415,7 @@ class TestPromptComposition:
             "subject": "Chapter One",
             "seed": 0,
         })
-        call_kwargs = mock_instance.generate.call_args[1]
+        call_kwargs = mock_instance.generate_image.call_args[1]
         prompt = call_kwargs["prompt"]
         assert "typography" in prompt.lower() or "text reading" in prompt.lower()
 
@@ -477,7 +477,7 @@ class TestWarmUp:
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
 
         mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
+        mock_instance.generate_image.return_value = mock_pil_image
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
