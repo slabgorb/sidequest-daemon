@@ -64,7 +64,7 @@ async def create_renderer(
     try:
         worker = MediaWorker(
             name="flux",
-            command=[sys.executable, "-m", "sidequest.media.workers.flux_worker"],
+            command=[sys.executable, "-m", "sidequest_daemon.media.workers.flux_mlx_worker"],
             workdir=Path.cwd(),
             default_timeout=900.0,
         )
