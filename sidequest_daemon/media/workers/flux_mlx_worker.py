@@ -209,58 +209,6 @@ class FluxMLXWorker:
         self.models.clear()
         self._active_variant = None
 
-    @staticmethod
-    def json_line_main() -> None:
-        """JSON-line protocol: read requests on stdin, respond on stdout."""
-        for line in sys.stdin:
-            try:
-                request = json.loads(line.strip())
-                command = request.get("command")
-
-                if command == "init":
-                    output_dir = request.get("output_dir", "/tmp/sidequest-flux")
-                    worker = FluxMLXWorker(Path(output_dir))
-                    response = {"status": "ready", "worker_id": id(worker)}
-                    print(json.dumps(response), flush=True)
-
-                elif command == "load_model":
-                    variant = request.get("variant", "schnell")
-                    worker.load_model(variant)
-                    response = {"status": "loaded", "variant": variant}
-                    print(json.dumps(response), flush=True)
-
-                elif command == "warm_up":
-                    result = worker.warm_up()
-                    response = {"status": "warmed", "result": result}
-                    print(json.dumps(response), flush=True)
-
-                elif command == "render":
-                    params = request.get("params", {})
-                    result = worker.render(params)
-                    response = {"status": "rendered", "result": result}
-                    print(json.dumps(response), flush=True)
-
-                elif command == "cleanup":
-                    worker.cleanup()
-                    response = {"status": "cleaned"}
-                    print(json.dumps(response), flush=True)
-
-                else:
-                    response = {"error": f"Unknown command: {command}"}
-                    print(json.dumps(response), flush=True)
-
-            except json.JSONDecodeError as e:
-                response = {"error": f"JSON decode error: {e}"}
-                print(json.dumps(response), flush=True)
-            except Exception as e:
-                response = {"error": str(e)}
-                print(json.dumps(response), flush=True)
-
-
-if __name__ == "__main__":
-    FluxMLXWorker.json_line_main()
-
-
 def _respond(
     req_id: str, *, result: dict | None = None, error: dict | None = None
 ) -> None:
