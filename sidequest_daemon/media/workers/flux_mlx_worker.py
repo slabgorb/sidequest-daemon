@@ -76,14 +76,22 @@ class FluxMLXWorker:
         self.models: dict = {}
         self._active_variant: str | None = None
 
+    # Quantization level for model loading. None = full precision.
+    # Runtime quantization (4/8) adds overhead on mflux 0.17.4 without speedup.
+    # Re-evaluate when pre-quantized checkpoints are available.
+    QUANTIZE: int | None = None
+
     def load_model(self, variant: str = "schnell") -> None:
         """Load a Flux model variant via mflux (MLX native)."""
         tracer = trace.get_tracer("sidequest_daemon.media.workers.flux_mlx_worker")
         with tracer.start_as_current_span("flux_mlx.load_model") as span:
             span.set_attribute("model.variant", variant)
+            span.set_attribute("model.quantize", self.QUANTIZE or 0)
             from mflux.models.flux.variants.txt2img.flux import Flux1
 
-            self.models[variant] = Flux1.from_name(model_name=variant)
+            self.models[variant] = Flux1.from_name(
+                model_name=variant, quantize=self.QUANTIZE
+            )
             self._active_variant = variant
 
     def _ensure_variant(self, variant: str) -> None:
@@ -99,7 +107,7 @@ class FluxMLXWorker:
 
             self.models["schnell"].generate_image(
                 prompt="black",
-                steps=1,
+                num_inference_steps=1,
                 guidance=0.0,
                 width=512,
                 height=512,
@@ -125,6 +133,7 @@ class FluxMLXWorker:
 
         return Flux1(
             model_config=config_factory[variant](),
+            quantize=self.QUANTIZE,
             lora_paths=[lora_path],
             lora_scales=[lora_scale],
         )
@@ -170,7 +179,7 @@ class FluxMLXWorker:
                 start = time.monotonic()
                 image = model.generate_image(
                     prompt=prompt,
-                    steps=tier_cfg["steps"],
+                    num_inference_steps=tier_cfg["steps"],
                     guidance=tier_cfg["guidance"],
                     width=tier_cfg["w"],
                     height=tier_cfg["h"],
