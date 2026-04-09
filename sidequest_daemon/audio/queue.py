@@ -20,12 +20,9 @@ _DRAIN_TIMEOUT_S = 2.0
 class AudioQueue:
     """Async background queue that resolves AudioCues and routes to AudioMixer."""
 
-    def __init__(
-        self, *, backend: Any, mixer: Any, voice_backend: Any | None = None
-    ) -> None:
+    def __init__(self, *, backend: Any, mixer: Any) -> None:
         self._backend = backend
         self._mixer = mixer
-        self._voice_backend = voice_backend
         self._queue: asyncio.PriorityQueue[tuple[int, int, AudioCue]] = (
             asyncio.PriorityQueue()
         )
@@ -88,8 +85,10 @@ class AudioQueue:
             self._process_cue(cue)
 
     def _process_cue(self, cue: AudioCue) -> None:
-        logger.warning("AUDIO: processing cue lane=%s mood=%s mixer=%s voice=%s",
-                       cue.lane, cue.mood, self._mixer is not None, self._voice_backend is not None)
+        logger.warning(
+            "AUDIO: processing cue lane=%s mood=%s mixer=%s",
+            cue.lane, cue.mood, self._mixer is not None,
+        )
         # FADE_OUT cues have no track to resolve — route directly to mixer.stop
         if cue.metadata.get("fade_out") and self._mixer is not None:
             channel = cue.lane.value
@@ -108,26 +107,12 @@ class AudioQueue:
         if path is None:
             return
 
-        # Set resolved_path in metadata so voice adapter can find the file
         cue.metadata["resolved_path"] = str(path)
 
         channel = cue.lane.value
 
         if cue.lane == AudioLane.MUSIC:
             self.current_mood = cue.mood
-
-        # Dispatch to voice backend (Discord) if available
-        if self._voice_backend is not None:
-            try:
-                import asyncio
-
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    asyncio.ensure_future(self._voice_backend.play(cue))
-                else:
-                    loop.run_until_complete(self._voice_backend.play(cue))
-            except Exception:
-                logger.debug("Voice backend error for cue %s", cue, exc_info=True)
 
         if self._mixer is None:
             return

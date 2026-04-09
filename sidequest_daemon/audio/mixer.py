@@ -26,7 +26,6 @@ class MixerSnapshot:
     master_volume: float
     ducked: bool
     mood: MoodCategory | None
-    tts_state: str | None = None
 
 
 CHANNEL_NAMES = ("music", "sfx", "ambience")
@@ -75,10 +74,9 @@ class AudioMixer:
             name: None for name in CHANNEL_NAMES
         }
 
-        # Extra channels: fade overlap + dedicated TTS
-        self._mixer.set_num_channels(max(len(CHANNEL_NAMES) + 2, 5))
+        # Extra channel for crossfade overlap
+        self._mixer.set_num_channels(max(len(CHANNEL_NAMES) + 1, 4))
         self._fade_channel = self._mixer.Channel(_FADE_CHANNEL_IDX)
-        self.tts_channel = self._mixer.Channel(_FADE_CHANNEL_IDX + 1)
 
         # Background timer for auto-advancing fades
         self._fade_timer: threading.Timer | None = None

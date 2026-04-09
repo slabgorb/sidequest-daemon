@@ -6,9 +6,7 @@ daemon's media, audio, and voice pipelines are included here.
 
 from __future__ import annotations
 
-from typing import Any
-
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 # ---------------------------------------------------------------------------
@@ -58,8 +56,6 @@ class MixerSettings(BaseModel):
 
     music_volume: float = 0.4
     sfx_volume: float = 0.7
-    voice_volume: float = 1.0
-    duck_music_for_voice: bool = True
     duck_amount_db: float = -12.0
     crossfade_default_ms: int = 3000
     loudnorm_target_lufs: float = -16.0
@@ -72,16 +68,6 @@ class AIGenerationConfig(BaseModel):
     model: str = "musicgen_small"
     max_generation_time_s: int = 15
     cache_generated: bool = True
-
-
-class CreatureVoicePreset(BaseModel):
-    model_config = ConfigDict(extra="allow")
-
-    creature_type: str = ""
-    description: str = ""
-    pitch: float = Field(default=1.0, ge=0.1, le=3.0)
-    rate: float = Field(default=1.0, ge=0.1, le=3.0)
-    effects: list[dict[str, Any]] = []
 
 
 class Variation(BaseModel):
@@ -106,7 +92,6 @@ class AudioConfig(BaseModel):
     mood_tracks: dict[str, list[MoodTrack]] = {}
     mood_keywords: dict[str, list[str]] = {}
     sfx_library: dict[str, list[str]] = {}
-    creature_voice_presets: dict[str, CreatureVoicePreset] = {}
     mixer: MixerSettings = MixerSettings()
     ai_generation: AIGenerationConfig = AIGenerationConfig()
     themes: list[ThemeFamily] = []
@@ -129,7 +114,6 @@ class GenrePack(BaseModel):
     meta: PackMeta = PackMeta(name="unknown", version="0.0.0", description="")
     audio: AudioConfig = AudioConfig()
     visual_style: VisualStyle = VisualStyle()
-    required_voice_models: list[str] = []
 
     @property
     def name(self) -> str:
