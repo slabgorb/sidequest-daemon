@@ -1,7 +1,7 @@
 # CLAUDE.md — SideQuest Daemon (Python)
 
-Python media services sidecar for SideQuest. Handles image generation (Flux),
-TTS (Kokoro), and audio mixing (ACE-Step). Runs alongside the Rust API.
+Python media services sidecar for SideQuest. Handles image generation (Flux)
+and audio mixing (ACE-Step). Runs alongside the Rust API.
 
 <!-- SHARED-PREAMBLE-START -->
 ## CRITICAL: Personal Project
@@ -14,9 +14,9 @@ This is a personal project under the `slabgorb` GitHub account.
 ## SideQuest System Overview
 
 Four repos compose the SideQuest Rust rewrite:
-- **sidequest-api** — Rust game engine and WebSocket API (workspace with 10 crates)
+- **sidequest-api** — Rust game engine and WebSocket API (workspace with 12 crates)
 - **sidequest-ui** — React/TypeScript game client
-- **sidequest-daemon** — Python media services (image gen, TTS, audio)
+- **sidequest-daemon** — Python media services (image gen, audio)
 - **sidequest-content** — Genre packs (YAML configs, audio, images, world data)
 
 Orchestrator repo (`orc-quest`) coordinates sprint tracking, docs, ADRs, and cross-repo scripts.
@@ -61,7 +61,7 @@ system — imported, called, and reachable from production code paths.
 
 ### Rust vs Python Split
 If it doesn't involve operating LLMs, it goes in Rust. If it needs to run model inference
-(Flux, Kokoro, ACE-Step — not Claude), use Python for library maturity. Claude calls go
+(Flux, ACE-Step — not Claude), use Python for library maturity. Claude calls go
 through Rust as CLI subprocesses.
 
 ## OTEL Observability Principle
@@ -77,7 +77,7 @@ every subsystem decision:
 - **Inventory mutations** — items added/removed, with source
 - **NPC registry** — NPCs detected, names assigned, collisions prevented
 - **Trope engine** — tick results, keyword matches, activations
-- **TTS segments** — what text was sent to voice synthesis
+- **Encounter engine** — beat selections, metric changes, resolution
 
 The GM panel is the lie detector. If a subsystem isn't emitting OTEL spans, you can't
 tell whether it's engaged or whether Claude is just improvising.
@@ -86,7 +86,7 @@ tell whether it's engaged or whether Claude is just improvising.
 
 ## Architecture Decision Index (docs/adr/)
 
-Before designing or modifying a subsystem, check the relevant ADR (68 total):
+Before designing or modifying a subsystem, check the relevant ADR (75 total):
 
 | Domain | ADRs |
 |--------|------|
@@ -95,7 +95,7 @@ Before designing or modifying a subsystem, check the relevant ADR (68 total):
 | Prompt engineering | 008 (three-tier taxonomy), 009 (attention-aware zones), 066 (persistent Opus sessions / Full vs Delta tier) |
 | Agent system | 010 (intent routing), 011 (JSON patches), 012 (session mgmt), 013 (lazy extraction), 057 (narrator-crunch separation), 059 (monster manual server-side pregen), 067 (unified narrator agent — no keyword matching) |
 | Characters | 007 (unified model), 014 (diamonds/coal), 015 (builder FSM), 016 (three-mode chargen) |
-| Combat / chase | 017 (cinematic chase), 033 (confrontation resource pools) |
+| Encounters | 017 (cinematic chase — superseded by 033), 033 (confrontation engine + resource pools), 071 (tactical ASCII grids) |
 | World / NPCs | 018 (trope engine), 019 (cartography), 020 (NPC disposition), 022 (world maturity), 055 (room graph navigation) |
 | Progression | 021 (four-track progression), 052 (narrative axis system) |
 | Narrative pacing | 024 (dual-track tension), 025 (pacing detection), 050 (image pacing throttle), 051 (two-tier turn counter) |
@@ -104,7 +104,10 @@ Before designing or modifying a subsystem, check the relevant ADR (68 total):
 | Multiplayer | 028 (perception rewriter), 029 (guest NPC players), 030 (scenario packs), 053 (scenario system) |
 | Telemetry | 031 (game watcher semantic telemetry), 058 (Claude subprocess OTEL passthrough) |
 | Media | 032 (genre LoRA style training), 034 (portrait identity consistency), 056 (script tool generators) |
-| Codebase structure | 060 (genre models decomposition), 061 (lore module decomposition), 062 (server lib extraction), 063 (dispatch handler splitting), 064 (game crate domain modules), 068 (magic literal extraction) |
+| Codebase structure | 060 (genre models decomposition), 061 (lore module decomposition), 062 (server lib extraction), 063 (dispatch handler splitting), 064 (game crate domain modules), 068 (magic literal extraction), 072 (system/milieu decomposition) |
+| Dice | 074 (dice resolution protocol), 075 (3D dice rendering) |
+| Fine-tuning | 069 (scenario fixtures), 073 (local fine-tuned model architecture) |
+| Image pipeline | 070 (MLX image renderer) |
 
 ## Spoiler Protection
 
@@ -114,9 +117,9 @@ Before designing or modifying a subsystem, check the relevant ADR (68 total):
 
 ## Why Python
 
-This repo exists because the ML inference stack (Flux for images, Kokoro for TTS,
-ACE-Step for music) has mature Python libraries with no Rust equivalents. The Rust
-API calls this daemon via HTTP for media generation. Everything else is in Rust.
+This repo exists because the ML inference stack (Flux for images, ACE-Step for
+music) has mature Python libraries with no Rust equivalents. The Rust API calls
+this daemon via Unix socket for media generation. Everything else is in Rust.
 
 ## Build Commands
 
@@ -130,7 +133,6 @@ uv run python -m sidequest_daemon  # Run daemon
 
 - **Unix socket server** (`/tmp/sidequest-renderer.sock`) — JSON-RPC protocol, routes by `tier` field
 - **Image gen**: Flux.1-dev (12 steps) and Flux.1-schnell (4 steps) via diffusers for portraits, landscapes, scenes, tactical maps, text overlays
-- **TTS**: Kokoro (ONNX, 54 voices, 24kHz PCM s16le) with Piper fallback
 - **Music**: ACE-Step for audio2audio theme variations
 - **Scene interpretation**: Rules-based narration → visual cue extraction (StageCue)
 - **Prompt composition**: Tier-specific prefixes, T5 (512 tok) + CLIP (77 tok) budgeting
