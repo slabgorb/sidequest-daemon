@@ -6,3 +6,7 @@ build/
 .venv/
 .eggs/
 *.so
+
+# Pennyfarthing / agent session state — should only live in the orchestrator,
+# but tools launched from the wrong CWD can leak .session/ into here.
+.session/
