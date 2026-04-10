@@ -71,6 +71,14 @@ class WorkerPool:
         self.output_dir = output_dir
         self._flux = None
         self._flux_loaded = False
+        # Embed worker — singleton, owned by the pool. Constructed eagerly
+        # at warmup, never per-request. Per-request construction was the
+        # 2026-04-10 playtest deadlock root cause: a fresh SentenceTransformer
+        # download/MPS placement on every embed call, racing with Flux on
+        # the same MPS device.
+        self._embed: EmbedWorker | None = None
+        self._embed_loaded = False
+        self._embed_warmup_ms = 0
         self.pipeline_factory = None  # Set by _run_daemon after init
 
         # GPU memory coordinator — manages 80GB shared budget across backends
@@ -96,6 +104,50 @@ class WorkerPool:
         if not self._flux_loaded:
             self.warm_up_flux()
 
+    def warm_up_embed(self) -> dict:
+        """Eagerly construct EmbedWorker and load its SentenceTransformer model.
+
+        Called once at daemon startup (when ``--warmup`` or ``--warmup=all``
+        is passed) and never again. The same instance is reused for every
+        subsequent embed request via ``pool.embed``.
+        """
+        if self._embed_loaded:
+            return {
+                "worker": "embed",
+                "status": "already_warm",
+                "warmup_ms": 0,
+                "model": "all-MiniLM-L6-v2",
+            }
+        import time
+        start = time.monotonic()
+        log.info("Loading SentenceTransformer all-MiniLM-L6-v2 on MPS...")
+        self._embed = EmbedWorker()
+        self._embed._load_model()
+        self._embed_warmup_ms = int((time.monotonic() - start) * 1000)
+        self._embed_loaded = True
+        log.info("Embed worker warm (%.1fs)", self._embed_warmup_ms / 1000)
+        return {
+            "worker": "embed",
+            "status": "warm",
+            "warmup_ms": self._embed_warmup_ms,
+            "model": "all-MiniLM-L6-v2",
+        }
+
+    def _ensure_embed(self) -> None:
+        if not self._embed_loaded:
+            self.warm_up_embed()
+
+    def embed(self, text: str) -> list[float]:
+        """Generate a sentence embedding via the singleton EmbedWorker.
+
+        Synchronous — call from ``asyncio.to_thread`` and acquire the
+        ``render_lock`` to serialize against in-flight Flux renders on the
+        same MPS device.
+        """
+        self._ensure_embed()
+        assert self._embed is not None  # _ensure_embed populates it
+        return self._embed.generate_embedding(text)
+
     def render(self, params: dict) -> dict:
         """Route render request to the appropriate worker by tier."""
         tier = params.get("tier", "")
@@ -109,8 +161,10 @@ class WorkerPool:
         """Return current worker status."""
         return {
             "flux": "warm" if self._flux_loaded else "cold",
+            "embed": "warm" if self._embed_loaded else "cold",
             "supported_tiers": {
                 "flux": sorted(FLUX_TIERS),
+                "embed": sorted(EMBED_TIERS),
             },
         }
 
@@ -120,6 +174,11 @@ class WorkerPool:
             self._flux.cleanup()
             self._flux = None
             self._flux_loaded = False
+        if self._embed is not None:
+            # SentenceTransformer has no explicit close — drop the reference
+            # so GC + MPS cache release happens.
+            self._embed = None
+            self._embed_loaded = False
 
 
 async def _handle_client(
@@ -170,6 +229,8 @@ async def _handle_client(
                     results = {}
                     if target in ("all", "flux"):
                         results["flux"] = await asyncio.to_thread(pool.warm_up_flux)
+                    if target in ("all", "embed"):
+                        results["embed"] = await asyncio.to_thread(pool.warm_up_embed)
                     _write(writer, req_id, result={"status": "warm", "workers": results})
                 except Exception as e:
                     _write(writer, req_id, error={"code": "WARMUP_FAILED", "message": str(e)})
@@ -310,24 +371,41 @@ async def _handle_client(
                     except Exception as e:
                         _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
             elif method == "embed":
-                # Story 15-7: Generate sentence embeddings for lore fragments
+                # Story 15-7: Generate sentence embeddings for lore fragments.
+                #
+                # 2026-04-10 playtest deadlock fix: route through the
+                # singleton ``pool.embed`` instead of constructing a fresh
+                # ``EmbedWorker()`` per request, run on a worker thread via
+                # ``asyncio.to_thread`` instead of blocking the event loop,
+                # and acquire the SAME ``render_lock`` the Flux render path
+                # uses so we don't race a second model session on the MPS
+                # device. Embedding is fast (<100ms once warm) so the lock
+                # is not a throughput concern.
                 text = params.get("text", "")
                 if not text or not text.strip():
                     _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "embed requires non-empty 'text' field"})
                     continue
-                try:
-                    import time
-                    start = time.monotonic()
-                    worker = EmbedWorker()
-                    embedding = worker.generate_embedding(text)
-                    latency_ms = int((time.monotonic() - start) * 1000)
-                    _write(writer, req_id, result={
-                        "embedding": embedding,
-                        "model": worker._model_name,
-                        "latency_ms": latency_ms,
-                    })
-                except Exception as e:
-                    _write(writer, req_id, error={"code": "EMBED_FAILED", "message": str(e)})
+                async with render_lock:
+                    try:
+                        import time
+                        start = time.monotonic()
+                        embedding = await asyncio.to_thread(pool.embed, text)
+                        latency_ms = int((time.monotonic() - start) * 1000)
+                        log.info(
+                            "embed.generated — model=%s text_len=%d latency_ms=%d",
+                            "all-MiniLM-L6-v2",
+                            len(text),
+                            latency_ms,
+                        )
+                        _write(writer, req_id, result={
+                            "embedding": embedding,
+                            "model": "all-MiniLM-L6-v2",
+                            "latency_ms": latency_ms,
+                        })
+                    except Exception as e:
+                        # No silent fallback — fail loud with structured error.
+                        log.exception("embed.failed — text_len=%d", len(text))
+                        _write(writer, req_id, error={"code": "EMBED_FAILED", "message": str(e)})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
@@ -393,6 +471,9 @@ async def _run_daemon(
         if target in ("all", "flux"):
             log.info("Pre-loading Flux model...")
             await asyncio.to_thread(pool.warm_up_flux)
+        if target in ("all", "embed"):
+            log.info("Pre-loading SentenceTransformer embed model...")
+            await asyncio.to_thread(pool.warm_up_embed)
         log.info("Models warm and ready")
 
     # Clean up stale socket
