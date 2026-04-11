@@ -1,36 +1,48 @@
 # sidequest-daemon
 
-Media services daemon for SideQuest — image generation, music generation, text-to-speech, and audio playback. Runs as a standalone Python process communicating via Unix socket, providing rendering services to the Rust game engine (`sidequest-api`).
+Media services daemon for SideQuest — image generation and audio playback.
+Runs as a standalone Python process communicating via Unix socket, providing
+rendering services to the Rust game engine (`sidequest-api`).
+
+> **2026-04 note:** Kokoro TTS and runtime ACE-Step music generation have been
+> removed from this daemon. Music is now pre-rendered at build time and played
+> back from a library (see the `audio/` package). TTS, Piper, and voice
+> synthesis paths no longer exist.
 
 ## Architecture
 
 ```
 sidequest-api (Rust)  ──JSON over Unix socket──►  sidequest-daemon (Python)
-                                                    ├── Flux image generation (MPS/CUDA)
-                                                    ├── ACE-Step music generation
-                                                    ├── Kokoro TTS (Piper fallback)
-                                                    ├── Audio mixer (pygame-ce)
+                                                    ├── Flux image generation (MLX / MPS / CUDA)
+                                                    ├── Audio library playback (pygame-ce)
                                                     └── Scene interpretation
 ```
 
-The daemon is a hot-loaded process — start it once, and it keeps GPU models warm between requests. The Rust backend sends render commands over `/tmp/sidequest-renderer.sock` and gets back file paths to generated images/audio.
+The daemon is a hot-loaded process — start it once, and it keeps the Flux image
+model warm between requests. The Rust backend sends render commands over
+`/tmp/sidequest-renderer.sock` and gets back file paths to generated images.
 
 ## Services
 
-**Flux Worker** — Image generation using Flux schnell and dev models. Six render tiers: `scene_illustration`, `portrait`, `landscape`, `text_overlay`, `cartography`, `tactical_sketch`. Supports Apple Silicon (MPS) and NVIDIA (CUDA).
+**Flux Worker** — Image generation using Flux schnell and dev models. Six
+render tiers: `scene_illustration`, `portrait`, `landscape`, `text_overlay`,
+`cartography`, `tactical_sketch`. Current backend is the MLX worker
+(`workers/flux_mlx_worker.py`, per ADR-070), targeting Apple Silicon. Earlier
+PyTorch/diffusers code is retired.
 
-**Kokoro TTS** — Text-to-speech with 54 built-in voices, voice blending, streaming and batch modes, 24kHz PCM output. Character voice routing with per-voice effects. Piper as fallback engine.
+**Audio Library Backend** — Reads pre-rendered music tracks (ACE-Step produced
+at build time, not at runtime) from genre pack audio directories and selects
+tracks by mood via `rotator.py`. Playback uses `pygame-ce` through
+`audio/mixer.py` across the channels defined in that module.
 
-**ACE-Step Worker** — Prompt-based music generation via ACE-Step. Configurable duration and seed, outputs WAV files. Requires the `ACE_STEP_PATH` environment variable pointing to a local ACE-Step installation.
-
-**Audio Mixer** — pygame-ce based playback across 3 named channels: music, SFX, and ambience. Supports crossfade transitions and volume ducking.
+**Scene Interpreter** — Rules-based narration-to-`StageCue` extractor. Turns
+narrator prose into structured visual cues that the image pipeline can render.
 
 ## Prerequisites
 
 - Python 3.11+
-- For image generation: Apple Silicon (MPS) or NVIDIA GPU (CUDA)
-- For TTS: Kokoro ONNX models auto-download to `~/.sidequest/models/kokoro/`
-- For music generation: [ACE-Step](https://github.com/ace-step/ACE-Step) installed locally, `ACE_STEP_PATH` set
+- For image generation: Apple Silicon (MLX / MPS) preferred; NVIDIA CUDA path is
+  no longer the primary target after ADR-070
 - Genre packs directory (shared YAML + audio assets)
 
 ## Installation
@@ -83,7 +95,6 @@ sidequest-renderer --shutdown  # Graceful shutdown
 |----------|---------|-------------|
 | `SIDEQUEST_GENRE_PACKS` | `../genre_packs` (sibling dir) | Path to genre packs directory |
 | `SIDEQUEST_OUTPUT_DIR` | temp dir | Directory for generated output files |
-| `ACE_STEP_PATH` | *(required for music)* | Path to local ACE-Step installation |
 
 ### CLI arguments
 
@@ -113,8 +124,8 @@ The daemon communicates via newline-delimited JSON over a Unix domain socket at 
 |--------|-------------|
 | `ping` | Health check — returns `{"status": "ok"}` |
 | `status` | Worker pool status and loaded models |
-| `render` | Generate an image or music track (routed by tier) |
-| `warm_up` | Pre-load models (`{"worker": "flux"\|"tts"\|"acestep"\|"all"}`) |
+| `render` | Generate an image (routed by tier) |
+| `warm_up` | Pre-load the Flux model (and embedding model for ADR-048 lore RAG) |
 | `shutdown` | Graceful daemon shutdown |
 
 ## Package structure
@@ -123,17 +134,18 @@ The daemon communicates via newline-delimited JSON over a Unix domain socket at 
 sidequest_daemon/
 ├── media/           # Daemon server, workers, cache, prompt composer
 │   ├── daemon.py    # Entry point — Unix socket server + CLI
-│   ├── workers/     # Flux, TTS, ACE-Step worker processes
+│   ├── workers/     # flux_mlx_worker.py (sole runtime worker)
 │   └── ...
 ├── renderer/        # Data models (StageCue, RenderTier, RenderResult)
-├── audio/           # Mixer, library backend, theme rotation
-├── voice/           # Kokoro TTS, Piper fallback, voice routing
+├── audio/           # Mixer, library backend, theme rotation, scene interpreter
 ├── genre/           # Genre pack model subset (VisualStyle, AudioConfig)
 ├── ml/              # GPU memory management
 ├── scene_interpreter.py  # Narrative → StageCue rules engine
-├── config.py        # Path resolution helpers
 └── types.py         # Stub types for game-engine interfaces
 ```
+
+> If a file listed above has moved or been removed, treat the source tree as
+> authoritative and update this README rather than the other way around.
 
 ## Development
 
