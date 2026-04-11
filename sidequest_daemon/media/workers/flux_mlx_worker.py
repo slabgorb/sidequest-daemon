@@ -148,7 +148,24 @@ class FluxMLXWorker:
                     raise ValueError(f"Unsupported tier: {tier_name!r}")
 
                 tier_cfg = self.TIER_CONFIGS[tier_name]
-                variant = tier_cfg["model"]
+                # Story 35-15: variant override from the genre pack's
+                # `visual_style.yaml::preferred_model`. Empty string (or
+                # missing) → fall back to the tier's default variant. Any
+                # non-empty value MUST be a known variant — no silent
+                # fallback, unknown values raise loudly so a misconfigured
+                # genre pack fails the render instead of silently
+                # downgrading to the tier default.
+                requested_variant = params.get("variant", "") or ""
+                if requested_variant:
+                    if requested_variant not in {"dev", "schnell"}:
+                        raise ValueError(
+                            f"Unknown variant override {requested_variant!r} "
+                            f"for tier {tier_name!r}. Valid values: 'dev', 'schnell'. "
+                            f"Check visual_style.yaml::preferred_model."
+                        )
+                    variant = requested_variant
+                else:
+                    variant = tier_cfg["model"]
 
                 prompt = self._compose_prompt(params)
                 seed = params.get("seed", 0)
