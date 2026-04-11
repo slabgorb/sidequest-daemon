@@ -84,23 +84,26 @@ tell whether it's engaged or whether Claude is just improvising.
 
 **Not needed for:** Cosmetic UI changes (labels, spacing, colors).
 
-## Architecture Decision Index (docs/adr/)
+## Architecture Decision Index
 
-Before designing or modifying a subsystem, check the relevant ADR (75 total):
+ADRs live in the orchestrator repo at `orc-quest/docs/adr/`. See
+`orc-quest/docs/adr/README.md` for the canonical index. Before designing
+or modifying a subsystem, check the relevant ADR:
 
 | Domain | ADRs |
 |--------|------|
 | Core architecture | 001 (Claude CLI only), 002 (SOUL principles), 005 (background-first), 006 (graceful degradation) |
 | Genre packs | 003 (pack architecture), 004 (lazy binding) |
 | Prompt engineering | 008 (three-tier taxonomy), 009 (attention-aware zones), 066 (persistent Opus sessions / Full vs Delta tier) |
-| Agent system | 010 (intent routing), 011 (JSON patches), 012 (session mgmt), 013 (lazy extraction), 057 (narrator-crunch separation), 059 (monster manual server-side pregen), 067 (unified narrator agent — no keyword matching) |
+| Agent system | 010 (intent routing — **superseded by 067**), 011 (JSON patches), 012 (session mgmt), 013 (lazy extraction — superseded by 057), 057 (narrator-crunch separation), 059 (monster manual server-side pregen), 067 (unified narrator agent) |
 | Characters | 007 (unified model), 014 (diamonds/coal), 015 (builder FSM), 016 (three-mode chargen) |
-| Encounters | 017 (cinematic chase — superseded by 033), 033 (confrontation engine + resource pools), 071 (tactical ASCII grids) |
+| Encounters | 017 (cinematic chase — superseded by 033), 033 (confrontation engine + resource pools), 071 (tactical ASCII grids — proposed) |
 | World / NPCs | 018 (trope engine), 019 (cartography), 020 (NPC disposition), 022 (world maturity), 055 (room graph navigation) |
 | Progression | 021 (four-track progression), 052 (narrative axis system) |
 | Narrative pacing | 024 (dual-track tension), 025 (pacing detection), 050 (image pacing throttle), 051 (two-tier turn counter) |
 | Session persistence | 023 (state + recap) |
-| Frontend / protocol | 026 (client state mirror), 027 (reactive state messaging), 054 (WebRTC voice chat disabled), 065 (protocol message decomposition) |
+| Frontend / protocol | 026 (client state mirror), 027 (reactive state messaging), 065 (protocol message decomposition — proposed), 076 (narration protocol collapse post-TTS — proposed) |
+| Historical (removed subsystems) | 054 (WebRTC voice chat — files deleted 2026-04), 045 (client audio engine — two-channel post-TTS) |
 | Multiplayer | 028 (perception rewriter), 029 (guest NPC players), 030 (scenario packs), 053 (scenario system) |
 | Telemetry | 031 (game watcher semantic telemetry), 058 (Claude subprocess OTEL passthrough) |
 | Media | 032 (genre LoRA style training), 034 (portrait identity consistency), 056 (script tool generators) |

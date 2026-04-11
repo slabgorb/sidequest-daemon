@@ -1,7 +1,8 @@
 """Genre pack models — daemon-relevant subset.
 
 Copied from sq-2/sidequest/genre/models.py. Only the models needed by the
-daemon's media, audio, and voice pipelines are included here.
+daemon's media and audio pipelines are included here. (Voice pipeline was
+removed in 2026-04 along with Kokoro TTS.)
 """
 
 from __future__ import annotations
