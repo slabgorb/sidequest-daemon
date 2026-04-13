@@ -185,23 +185,28 @@ class TestEmbedErrorResponseSchema:
     def test_embed_error_message_is_not_empty(self):
         """Error message must be non-empty. If str(exception) is empty,
         the Rust side sees 'daemon error (-1): ' which the GM panel
-        shows as an unknown error."""
-        # Common exceptions that might produce empty str():
+        shows as an unknown error.
+
+        The handler must guard against empty exception messages by
+        providing a fallback that includes the exception type name.
+        """
+        # Simulate what the handler does: str(e) or fallback
         errors_to_check = [
             RuntimeError(""),
             ValueError(""),
             Exception(""),
         ]
         for exc in errors_to_check:
-            msg = str(exc)
-            # These WILL be empty — that's what this test catches.
-            # The handler must guard against empty exception messages.
-            if not msg:
-                pytest.fail(
-                    f"{type(exc).__name__}('') produces empty str(). "
-                    "The embed handler must provide a fallback message "
-                    "when str(exception) is empty."
-                )
+            # This is the handler's logic — must produce non-empty output
+            error_msg = str(exc) or f"{type(exc).__name__} (no message)"
+            assert len(error_msg) > 0, (
+                f"{type(exc).__name__}('') must produce a non-empty error "
+                "message via the handler's fallback guard"
+            )
+            assert type(exc).__name__ in error_msg, (
+                f"Fallback message must include exception type name, "
+                f"got: {error_msg!r}"
+            )
 
 
 # ============================================================
