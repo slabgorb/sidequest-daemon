@@ -404,8 +404,12 @@ async def _handle_client(
                         })
                     except Exception as e:
                         # No silent fallback — fail loud with structured error.
+                        # Guard against empty str(exception) — some exceptions
+                        # (e.g. RuntimeError("")) produce empty strings, which
+                        # surface as "Unknown error" on the Rust/GM panel side.
+                        error_msg = str(e) or f"{type(e).__name__} (no message)"
                         log.exception("embed.failed — text_len=%d", len(text))
-                        _write(writer, req_id, error={"code": "EMBED_FAILED", "message": str(e)})
+                        _write(writer, req_id, error={"code": "EMBED_FAILED", "message": error_msg})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
