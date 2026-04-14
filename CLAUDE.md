@@ -1,7 +1,7 @@
 # CLAUDE.md — SideQuest Daemon (Python)
 
 Python media services sidecar for SideQuest. Handles image generation (Flux)
-and audio mixing (ACE-Step). Runs alongside the Rust API.
+and audio playback from pre-rendered tracks. Runs alongside the Rust API.
 
 <!-- SHARED-PREAMBLE-START -->
 ## CRITICAL: Personal Project
@@ -120,9 +120,11 @@ or modifying a subsystem, check the relevant ADR:
 
 ## Why Python
 
-This repo exists because the ML inference stack (Flux for images, ACE-Step for
-music) has mature Python libraries with no Rust equivalents. The Rust API calls
-this daemon via Unix socket for media generation. Everything else is in Rust.
+This repo exists because the Flux image-gen stack has mature Python libraries
+with no Rust equivalents. The Rust API calls this daemon via Unix socket for
+image generation. Music is pre-rendered at build time (see ACE-Step project)
+and played back from a file library — no runtime music inference lives here.
+Everything else is in Rust.
 
 ## Build Commands
 
@@ -136,7 +138,7 @@ uv run python -m sidequest_daemon  # Run daemon
 
 - **Unix socket server** (`/tmp/sidequest-renderer.sock`) — JSON-RPC protocol, routes by `tier` field
 - **Image gen**: Flux.1-dev (12 steps) and Flux.1-schnell (4 steps) via diffusers for portraits, landscapes, scenes, tactical maps, text overlays
-- **Music**: ACE-Step for audio2audio theme variations
+- **Music**: Audio library playback over pre-rendered tracks (pygame-ce via `audio/mixer.py`). No runtime music inference — ACE-Step lives in its own project and produces tracks at build time.
 - **Scene interpretation**: Rules-based narration → visual cue extraction (StageCue)
 - **Prompt composition**: Tier-specific prefixes, T5 (512 tok) + CLIP (77 tok) budgeting
 - **Config**: Reads genre pack paths from `SIDEQUEST_GENRE_PACKS` env var
