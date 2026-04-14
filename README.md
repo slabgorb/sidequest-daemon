@@ -68,7 +68,7 @@ sidequest-renderer --warmup
 
 # Warm up a single worker (skip others):
 sidequest-renderer --warmup=flux
-sidequest-renderer --warmup=acestep
+sidequest-renderer --warmup=embed
 ```
 
 ### From the orchestrator
