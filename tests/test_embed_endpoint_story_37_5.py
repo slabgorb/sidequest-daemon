@@ -255,7 +255,8 @@ class TestEmbedSocketRoundTrip:
         writer.wait_closed = noop
 
         render_lock = asyncio.Lock()
-        await _handle_client(reader, writer, pool_with_mock_embed, render_lock)
+        embed_lock = asyncio.Lock()
+        await _handle_client(reader, writer, pool_with_mock_embed, render_lock, embed_lock)
 
         assert len(responses) >= 1, "Handler must write at least one response"
         resp = json.loads(responses[0].decode())
@@ -293,7 +294,8 @@ class TestEmbedSocketRoundTrip:
         writer.wait_closed = _noop
 
         render_lock = asyncio.Lock()
-        await _handle_client(reader, writer, pool_with_mock_embed, render_lock)
+        embed_lock = asyncio.Lock()
+        await _handle_client(reader, writer, pool_with_mock_embed, render_lock, embed_lock)
 
         assert len(responses) >= 1
         resp = json.loads(responses[0].decode())
@@ -333,7 +335,8 @@ class TestEmbedSocketRoundTrip:
         writer.wait_closed = _noop
 
         render_lock = asyncio.Lock()
-        await _handle_client(reader, writer, pool, render_lock)
+        embed_lock = asyncio.Lock()
+        await _handle_client(reader, writer, pool, render_lock, embed_lock)
 
         assert len(responses) >= 1
         resp = json.loads(responses[0].decode())

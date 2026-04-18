@@ -49,7 +49,12 @@ class EmbedWorker:
     def _load_model(self):
         if self._model is None:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self._model_name)
+            # Story 37-23: pin to CPU. MPS is reserved for Flux renders —
+            # running embed on CPU gives it an independent device so the
+            # embed path never contends with in-flight image generation
+            # and can never re-trigger the 2026-04-10 concurrent-MPS-session
+            # deadlock that story 37-5 originally fixed by sharing a lock.
+            self._model = SentenceTransformer(self._model_name, device="cpu")
         return self._model
 
     def generate_embedding(self, text: str) -> list[float]:
@@ -120,7 +125,7 @@ class WorkerPool:
             }
         import time
         start = time.monotonic()
-        log.info("Loading SentenceTransformer all-MiniLM-L6-v2 on MPS...")
+        log.info("Loading SentenceTransformer all-MiniLM-L6-v2 on CPU...")
         self._embed = EmbedWorker()
         self._embed._load_model()
         self._embed_warmup_ms = int((time.monotonic() - start) * 1000)
@@ -140,9 +145,11 @@ class WorkerPool:
     def embed(self, text: str) -> list[float]:
         """Generate a sentence embedding via the singleton EmbedWorker.
 
-        Synchronous — call from ``asyncio.to_thread`` and acquire the
-        ``render_lock`` to serialize against in-flight Flux renders on the
-        same MPS device.
+        Synchronous — call from ``asyncio.to_thread`` and serialize against
+        other embed calls via ``embed_lock``. Embed runs on CPU (see
+        ``EmbedWorker._load_model``) so it has an independent device from
+        Flux/MPS and cannot contend with in-flight image generation
+        (story 37-23).
         """
         self._ensure_embed()
         assert self._embed is not None  # _ensure_embed populates it
@@ -186,6 +193,7 @@ async def _handle_client(
     writer: asyncio.StreamWriter,
     pool: WorkerPool,
     render_lock: asyncio.Lock,
+    embed_lock: asyncio.Lock,
 ) -> None:
     """Handle a single client connection — read JSON lines, dispatch, respond."""
     peer = writer.get_extra_info("peername") or "unix-client"
@@ -373,19 +381,22 @@ async def _handle_client(
             elif method == "embed":
                 # Story 15-7: Generate sentence embeddings for lore fragments.
                 #
-                # 2026-04-10 playtest deadlock fix: route through the
-                # singleton ``pool.embed`` instead of constructing a fresh
-                # ``EmbedWorker()`` per request, run on a worker thread via
-                # ``asyncio.to_thread`` instead of blocking the event loop,
-                # and acquire the SAME ``render_lock`` the Flux render path
-                # uses so we don't race a second model session on the MPS
-                # device. Embedding is fast (<100ms once warm) so the lock
-                # is not a throughput concern.
+                # Architecture (post-37-23):
+                # - Route through the singleton ``pool.embed`` — NEVER
+                #   construct ``EmbedWorker()`` per request (that was the
+                #   2026-04-10 playtest deadlock root cause).
+                # - Run on a worker thread via ``asyncio.to_thread`` to
+                #   keep the event loop unblocked during inference.
+                # - Acquire ``embed_lock`` (NOT ``render_lock``). Embed
+                #   runs on CPU and Flux runs on MPS — independent devices,
+                #   independent locks. Under the old shared-lock design,
+                #   10ms embeds serialized behind 5–60s Flux renders; now
+                #   they run in parallel.
                 text = params.get("text", "")
                 if not text or not text.strip():
                     _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "embed requires non-empty 'text' field"})
                     continue
-                async with render_lock:
+                async with embed_lock:
                     try:
                         import time
                         start = time.monotonic()
@@ -459,6 +470,10 @@ async def _run_daemon(
         os.environ["SIDEQUEST_GENRE_PACKS"] = str(genre_packs)
     pool = WorkerPool(output_dir)
     render_lock = asyncio.Lock()
+    # Story 37-23: embed gets its own lock. Flux runs on MPS (render_lock);
+    # embed runs on CPU (embed_lock). Independent devices, independent locks —
+    # a long Flux render no longer blocks a ~30ms embed request.
+    embed_lock = asyncio.Lock()
 
     # Initialize audio pipeline via factory
     from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
@@ -485,7 +500,7 @@ async def _run_daemon(
         SOCKET_PATH.unlink()
 
     server = await asyncio.start_unix_server(
-        lambda r, w: _handle_client(r, w, pool, render_lock),
+        lambda r, w: _handle_client(r, w, pool, render_lock, embed_lock),
         path=str(SOCKET_PATH),
     )
 
