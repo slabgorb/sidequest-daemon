@@ -25,8 +25,16 @@ import sys
 import tempfile
 from pathlib import Path
 
+from opentelemetry import trace
+
 SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
 PID_PATH = Path("/tmp/sidequest-renderer.pid")
+
+# Story 37-23: OTEL tracer for dispatch-level instrumentation. The GM panel
+# consumes these spans via the ADR-058 Claude-subprocess OTEL passthrough to
+# verify that the lock split is actually delivering concurrent render+embed
+# at runtime — the CLAUDE.md "OTEL as Illusionism detector" principle.
+tracer = trace.get_tracer("sidequest_daemon.media.daemon")
 
 log = logging.getLogger(__name__)
 
@@ -145,8 +153,9 @@ class WorkerPool:
     def embed(self, text: str) -> list[float]:
         """Generate a sentence embedding via the singleton EmbedWorker.
 
-        Synchronous — call from ``asyncio.to_thread`` and serialize against
-        other embed calls via ``embed_lock``. Embed runs on CPU (see
+        Synchronous — call from ``asyncio.to_thread``. The caller must hold
+        ``embed_lock`` before invoking (see ``_handle_client`` dispatch);
+        this method itself does not take a lock. Embed runs on CPU (see
         ``EmbedWorker._load_model``) so it has an independent device from
         Flux/MPS and cannot contend with in-flight image generation
         (story 37-23).
@@ -371,13 +380,18 @@ async def _handle_client(
                         composed.positive_prompt[:150],
                     )
 
-                # Serialize renders — only one GPU operation at a time
-                async with render_lock:
-                    try:
-                        result = await asyncio.to_thread(pool.render, params)
-                        _write(writer, req_id, result=result)
-                    except Exception as e:
-                        _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
+                # Serialize renders — only one GPU operation at a time.
+                # Story 37-23: wrap dispatch in OTEL span so the GM panel can
+                # verify render acquired render_lock (not embed_lock).
+                with tracer.start_as_current_span("daemon.dispatch.render") as span:
+                    span.set_attribute("lock_name", "render_lock")
+                    span.set_attribute("tier", params.get("tier", ""))
+                    async with render_lock:
+                        try:
+                            result = await asyncio.to_thread(pool.render, params)
+                            _write(writer, req_id, result=result)
+                        except Exception as e:
+                            _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
             elif method == "embed":
                 # Story 15-7: Generate sentence embeddings for lore fragments.
                 #
@@ -396,31 +410,41 @@ async def _handle_client(
                 if not text or not text.strip():
                     _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "embed requires non-empty 'text' field"})
                     continue
-                async with embed_lock:
-                    try:
-                        import time
-                        start = time.monotonic()
-                        embedding = await asyncio.to_thread(pool.embed, text)
-                        latency_ms = int((time.monotonic() - start) * 1000)
-                        log.info(
-                            "embed.generated — model=%s text_len=%d latency_ms=%d",
-                            "all-MiniLM-L6-v2",
-                            len(text),
-                            latency_ms,
-                        )
-                        _write(writer, req_id, result={
-                            "embedding": embedding,
-                            "model": "all-MiniLM-L6-v2",
-                            "latency_ms": latency_ms,
-                        })
-                    except Exception as e:
-                        # No silent fallback — fail loud with structured error.
-                        # Guard against empty str(exception) — some exceptions
-                        # (e.g. RuntimeError("")) produce empty strings, which
-                        # surface as "Unknown error" on the Rust/GM panel side.
-                        error_msg = str(e) or f"{type(e).__name__} (no message)"
-                        log.exception("embed.failed — text_len=%d", len(text))
-                        _write(writer, req_id, error={"code": "EMBED_FAILED", "message": error_msg})
+                # Story 37-23: wrap dispatch in OTEL span. The lock_name
+                # attribute is the lie detector — if a future regression
+                # re-shares the locks, this attribute makes the mistake
+                # observable in the GM panel rather than silent.
+                with tracer.start_as_current_span("daemon.dispatch.embed") as span:
+                    span.set_attribute("lock_name", "embed_lock")
+                    span.set_attribute("text_len", len(text))
+                    async with embed_lock:
+                        try:
+                            import time
+                            start = time.monotonic()
+                            embedding = await asyncio.to_thread(pool.embed, text)
+                            latency_ms = int((time.monotonic() - start) * 1000)
+                            span.set_attribute("work_ms", latency_ms)
+                            log.info(
+                                "embed.generated — model=%s text_len=%d latency_ms=%d",
+                                "all-MiniLM-L6-v2",
+                                len(text),
+                                latency_ms,
+                            )
+                            _write(writer, req_id, result={
+                                "embedding": embedding,
+                                "model": "all-MiniLM-L6-v2",
+                                "latency_ms": latency_ms,
+                            })
+                        except Exception as e:
+                            # No silent fallback — fail loud with structured error.
+                            # Guard against empty str(exception) — some exceptions
+                            # (e.g. RuntimeError("")) produce empty strings, which
+                            # surface as "Unknown error" on the Rust/GM panel side.
+                            error_msg = str(e) or f"{type(e).__name__} (no message)"
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", type(e).__name__)
+                            log.exception("embed.failed — text_len=%d", len(text))
+                            _write(writer, req_id, error={"code": "EMBED_FAILED", "message": error_msg})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
