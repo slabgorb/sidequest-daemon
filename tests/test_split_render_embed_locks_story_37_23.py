@@ -12,8 +12,11 @@ become independent: ``render_lock`` guards Flux/MPS, ``embed_lock`` guards embed
 An embed request issued while Flux holds ``render_lock`` must complete within embed
 latency budget — that's the whole point of the refactor.
 
-Regression guards follow the 37-5 pattern: source-level inspection + a real-async
-concurrency proof. No daemon process required — pure unit-level assertions.
+No daemon subprocess required — tests combine source-level inspection, AST walking,
+a behavioral mock of ``SentenceTransformer`` for the CPU invariant, a real asyncio
+concurrency proof with modeled embed latency, and a negative-regression test that
+proves the concurrency harness CAN detect a shared-lock reversion (ensuring the
+green path is not a tautology).
 """
 
 from __future__ import annotations
@@ -21,9 +24,11 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
+import threading
 import time
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -63,6 +68,49 @@ class TestEmbedWorkerOnCpu:
         assert not re.search(r'device\s*=\s*["\']mps["\']', src), (
             "EmbedWorker._load_model must not pin device to MPS — embed is a "
             "CPU-only worker as of story 37-23"
+        )
+
+    def test_load_model_constructs_sentence_transformer_with_cpu_device(self):
+        """Behavioral proof (refactor-resistant): mock SentenceTransformer and
+        assert _load_model invokes it with ``device="cpu"`` regardless of how
+        the method is internally structured.
+
+        The source-grep tests above are brittle under refactoring — if
+        ``_load_model`` is ever split into a helper like
+        ``_build_model(device="cpu")``, the source check passes vacuously
+        because the kwarg no longer appears directly in ``_load_model``'s
+        body. This test mocks the constructor at the import path the
+        production code uses and asserts on the actual call, catching any
+        internal refactor that loses the CPU pin.
+        """
+        import sys
+        # Ensure a fresh model load — clear any cached singleton state
+        # that might skip the constructor call.
+        worker = EmbedWorker()
+
+        fake_model = MagicMock(name="SentenceTransformerInstance")
+        fake_constructor = MagicMock(return_value=fake_model)
+
+        # sentence_transformers is imported inside _load_model (lazy import)
+        # so we patch at the module level where it will be looked up.
+        fake_module = MagicMock()
+        fake_module.SentenceTransformer = fake_constructor
+
+        with patch.dict(sys.modules, {"sentence_transformers": fake_module}):
+            result = worker._load_model()
+
+        assert fake_constructor.called, (
+            "_load_model did not call SentenceTransformer — refactor may have "
+            "lost the model construction call entirely"
+        )
+        call_kwargs = fake_constructor.call_args.kwargs
+        assert call_kwargs.get("device") == "cpu", (
+            f"_load_model constructed SentenceTransformer with "
+            f"device={call_kwargs.get('device')!r}, expected 'cpu'. "
+            f"Story 37-23 invariant: embed never runs on MPS."
+        )
+        assert result is fake_model, (
+            "_load_model must return the SentenceTransformer instance it built"
         )
 
 
@@ -289,25 +337,51 @@ class TestNoNestedLockAcquisition:
 
 
 class _FakePool:
-    """Minimal pool stand-in for concurrency tests.
+    """Pool stand-in for concurrency tests.
 
-    ``render`` sleeps to simulate a long Flux render; ``embed`` returns a
-    tiny vector immediately. Mirrors the real WorkerPool surface used by
-    _handle_client without loading any models.
+    Both ``render`` and ``embed`` sleep to model real latencies. Modeling embed
+    latency is critical: with a zero-cost fake, ``asyncio.to_thread`` returns
+    almost immediately and the test would pass even with a shared lock — a
+    tautology. A realistic embed latency makes the concurrency proof actually
+    discriminate between independent-lock and shared-lock designs.
+
+    A ``threading.Event`` is set as soon as ``render`` acquires its work
+    (i.e. the sync body begins executing); test code can await the event
+    instead of relying on ``asyncio.sleep`` timing to synchronize with the
+    thread pool.
     """
 
-    def __init__(self, render_sleep_s: float) -> None:
+    def __init__(
+        self,
+        render_sleep_s: float = 0.5,
+        embed_sleep_s: float = 0.03,
+    ) -> None:
         self._render_sleep_s = render_sleep_s
+        self._embed_sleep_s = embed_sleep_s
         self.render_calls = 0
         self.embed_calls = 0
+        # Set by render() the instant the sync body starts — after
+        # asyncio.to_thread has dispatched into the pool and the worker
+        # thread is running. Test code awaits this to eliminate timing
+        # races on render_lock acquisition.
+        self.render_started = threading.Event()
 
     def render(self, params: dict) -> dict:
         self.render_calls += 1
+        # Signal BEFORE sleeping so the embed task can proceed as soon as
+        # the render body is running (and, importantly, render_lock is held
+        # by the calling async context before this sync body was dispatched).
+        self.render_started.set()
         time.sleep(self._render_sleep_s)
         return {"path": "/tmp/fake.png", "tier": params.get("tier")}
 
     def embed(self, text: str) -> list[float]:
         self.embed_calls += 1
+        # Model realistic CPU embed latency (~30ms). Without this the
+        # concurrency test is a tautology: asyncio.to_thread + zero-cost
+        # work returns so fast that a shared lock would also appear to
+        # pass. See `test_concurrency_harness_detects_shared_lock_regression`.
+        time.sleep(self._embed_sleep_s)
         return [0.0, 0.0, 0.0]
 
 
@@ -343,62 +417,129 @@ async def _feed_reader(lines: list[bytes]) -> asyncio.StreamReader:
     return reader
 
 
-@pytest.mark.asyncio
-async def test_embed_does_not_block_on_in_flight_render():
-    """The core behavioral guarantee of story 37-23.
+async def _run_render_then_embed(
+    pool: _FakePool,
+    render_lock: asyncio.Lock,
+    embed_lock: asyncio.Lock,
+) -> float:
+    """Run a render concurrent with an embed; return embed elapsed seconds.
 
-    Simulate: render is holding render_lock (long sleep). Meanwhile an embed
-    request arrives. Because the locks are independent, the embed handler
-    should acquire embed_lock immediately and return within embed latency
-    budget — NOT wait for the render to finish.
-
-    Pre-fix (single shared lock): embed waits ~render_sleep_s for the render
-    to complete, then runs. Post-fix: embed returns promptly.
+    Shared helper so the positive case (independent locks) and the negative
+    regression case (shared lock) drive the exact same harness. The only
+    variable between them is whether render_lock and embed_lock are
+    distinct objects.
     """
     import json
 
-    render_sleep_s = 0.5  # simulated long Flux render
-    embed_budget_s = 0.2  # must complete well inside the render window
-
-    pool = _FakePool(render_sleep_s=render_sleep_s)
-    render_lock = asyncio.Lock()
-    embed_lock = asyncio.Lock()
-
-    # Task A: issues a render request — this will hold render_lock for ~0.5s.
     render_reader = await _feed_reader(
         [json.dumps({"id": "r1", "method": "render", "params": {"tier": "portrait"}}).encode() + b"\n"]
     )
     render_writer = _StubWriter()
-
-    # Task B: issues an embed request — should NOT wait for render.
     embed_reader = await _feed_reader(
         [json.dumps({"id": "e1", "method": "embed", "params": {"text": "hello"}}).encode() + b"\n"]
     )
     embed_writer = _StubWriter()
 
-    # Kick off the render first so it holds render_lock before embed starts.
+    # Kick off the render first. render_lock is acquired by _handle_client
+    # BEFORE it dispatches to asyncio.to_thread; pool.render.render_started
+    # fires once the sync body is running in the thread pool. Awaiting the
+    # event guarantees render_lock is held before we measure embed.
     render_task = asyncio.create_task(
         _handle_client(render_reader, render_writer, pool, render_lock, embed_lock)
     )
-    # Tiny yield to let the render task claim render_lock.
-    await asyncio.sleep(0.05)
+
+    # Event-based synchronization — no timing assumption.
+    started = asyncio.get_event_loop().run_in_executor(
+        None, pool.render_started.wait, 2.0  # 2s safety cap
+    )
+    acquired = await started
+    assert acquired, (
+        "Render task did not begin within 2s — thread pool exhaustion or "
+        "deadlock prevented _handle_client from dispatching render"
+    )
     assert render_lock.locked(), (
-        "Precondition failed: render task did not acquire render_lock in time — "
-        "test timing needs adjustment"
+        "render_started fired but render_lock is not held — handler logic "
+        "changed and no longer acquires render_lock before dispatching work"
     )
 
     embed_start = time.monotonic()
     await _handle_client(embed_reader, embed_writer, pool, render_lock, embed_lock)
     embed_elapsed = time.monotonic() - embed_start
 
-    await render_task  # let the render finish cleanly
+    await render_task
+    return embed_elapsed
 
-    assert embed_elapsed < embed_budget_s, (
+
+@pytest.mark.asyncio
+async def test_embed_does_not_block_on_in_flight_render():
+    """The core behavioral guarantee of story 37-23 (positive case).
+
+    Render holds render_lock; embed uses a SEPARATE embed_lock. Embed must
+    complete proportional to its own modeled latency, not wait for the
+    render to finish.
+
+    Budget is proportional: embed must finish in under half the render
+    window. That's an order-of-magnitude separation the lock architecture
+    must deliver; it is not a tight wall-clock budget that would flake on
+    a loaded CI runner.
+    """
+    pool = _FakePool(render_sleep_s=0.5, embed_sleep_s=0.03)
+    render_lock = asyncio.Lock()
+    embed_lock = asyncio.Lock()
+
+    embed_elapsed = await _run_render_then_embed(pool, render_lock, embed_lock)
+
+    # Proportional budget: embed must finish in under half the render time.
+    # With independent locks, embed runs in ~30ms; render sleeps 500ms.
+    # A shared-lock regression would push embed past 500ms. A budget of
+    # render_sleep_s/2 = 250ms gives a 5x margin over the true 30ms cost
+    # while still firmly catching any regression that serializes embed
+    # behind render.
+    proportional_budget_s = 0.5 / 2
+    assert embed_elapsed < proportional_budget_s, (
         f"Embed request blocked on render: took {embed_elapsed * 1000:.0f}ms, "
-        f"budget {embed_budget_s * 1000:.0f}ms. With independent locks, embed "
-        f"must not wait for Flux renders. Shared-lock regression likely."
+        f"budget {proportional_budget_s * 1000:.0f}ms (= render_sleep/2). "
+        f"With independent locks, embed must not wait for Flux renders. "
+        f"Shared-lock regression likely."
     )
     assert pool.embed_calls == 1, "embed handler did not invoke pool.embed"
+    assert pool.render_calls == 1, "render handler did not invoke pool.render"
+
+
+@pytest.mark.asyncio
+async def test_concurrency_harness_detects_shared_lock_regression():
+    """Negative-regression proof: the harness above actually catches the bug.
+
+    Runs the SAME concurrency scenario but passes ONE lock as both
+    render_lock and embed_lock — simulating a regression where someone
+    reverts 37-23 and re-shares the locks. Embed must now serialize behind
+    render, and the elapsed time should exceed the positive case's budget.
+
+    If this test ever starts passing (i.e. shared-lock also satisfies the
+    <budget assertion), the positive test is tautological and both are
+    broken. This negative test is the backstop that proves the positive
+    test is a real detector, not a pass-through.
+    """
+    pool = _FakePool(render_sleep_s=0.5, embed_sleep_s=0.03)
+    shared_lock = asyncio.Lock()
+
+    embed_elapsed = await _run_render_then_embed(pool, shared_lock, shared_lock)
+
+    # With a shared lock, embed must wait for render to finish — roughly
+    # the render_sleep_s (0.5s) MINUS however much render had already slept
+    # when embed arrived. Conservatively: embed must take longer than the
+    # proportional budget used in the positive test. If it doesn't, the
+    # harness isn't actually serializing work, and the positive test is
+    # tautological.
+    proportional_budget_s = 0.5 / 2
+    assert embed_elapsed >= proportional_budget_s, (
+        f"Harness did not detect shared-lock regression: embed took "
+        f"{embed_elapsed * 1000:.0f}ms under a shared lock but the "
+        f"positive-test budget is {proportional_budget_s * 1000:.0f}ms. "
+        f"This means _FakePool.embed is too cheap to exercise the lock, or "
+        f"_handle_client dispatches in a way that doesn't serialize through "
+        f"the shared lock. The positive test would pass vacuously."
+    )
 
 
 # ============================================================
@@ -406,13 +547,187 @@ async def test_embed_does_not_block_on_in_flight_render():
 # ============================================================
 
 
-class TestStaleCommentRemoved:
-    """The pool.embed docstring referenced the shared render_lock — must update."""
+class TestOtelInstrumentation:
+    """Per CLAUDE.md: every subsystem fix MUST emit OTEL spans so the GM panel
+    can verify the fix is engaged. Story 37-23 changes concurrent-dispatch
+    behavior — a prime candidate for silent regression (embed re-serializing
+    behind render) that only an OTEL span can detect at runtime.
 
-    def test_pool_embed_docstring_no_longer_says_acquire_render_lock(self):
+    Idiom (matches existing daemon OTEL, e.g. flux_mlx_worker.py:86):
+        tracer = trace.get_tracer("sidequest_daemon.media.daemon")
+        with tracer.start_as_current_span("daemon.dispatch.embed") as span:
+            span.set_attribute("lock_name", "embed_lock")
+            ...
+
+    These tests verify the span emission structurally. The GM panel can then
+    surface the spans via the ADR-058 Claude-subprocess OTEL passthrough.
+    """
+
+    def test_daemon_module_imports_opentelemetry_trace(self):
+        """The daemon module must import the OTEL trace API."""
+        has_trace_import = (
+            re.search(r"from\s+opentelemetry\s+import\s+.*trace", DAEMON_SOURCE)
+            or re.search(r"import\s+opentelemetry\.trace", DAEMON_SOURCE)
+        )
+        assert has_trace_import, (
+            "sidequest_daemon/media/daemon.py must import opentelemetry.trace "
+            "to emit dispatch spans. CLAUDE.md OTEL obligation: every "
+            "subsystem fix must be GM-panel-visible. See flux_mlx_worker.py "
+            "for the canonical import pattern."
+        )
+
+    def test_embed_dispatch_opens_otel_span(self):
+        """Embed branch must open an OTEL span naming the dispatch operation."""
+        block = _embed_handler_block()
+        # Accept either start_as_current_span or start_span — the flux worker
+        # uses start_as_current_span, which is the preferred pattern.
+        span_pattern = re.compile(
+            r"start_as_current_span\s*\(\s*[\"'][^\"']*embed[^\"']*[\"']",
+            re.IGNORECASE,
+        )
+        assert span_pattern.search(block), (
+            "Embed dispatch must open an OTEL span with a name identifying "
+            "the embed operation (e.g., 'daemon.dispatch.embed'). Without "
+            "this, the GM panel cannot verify embed ran concurrently with "
+            "Flux post-37-23. CLAUDE.md OTEL obligation is not satisfied "
+            "by the existing 'embed.generated' log line — logs and spans "
+            "serve different observers."
+        )
+
+    def test_render_dispatch_opens_otel_span(self):
+        """Render branch must open an OTEL span naming the dispatch operation.
+
+        Render was previously uninstrumented at the dispatch level; story
+        37-23 is the right time to close that gap because the lock split
+        introduces the very behavior the span is meant to observe.
+        """
+        block = _render_handler_block()
+        span_pattern = re.compile(
+            r"start_as_current_span\s*\(\s*[\"'][^\"']*render[^\"']*[\"']",
+            re.IGNORECASE,
+        )
+        assert span_pattern.search(block), (
+            "Render dispatch must open an OTEL span with a name identifying "
+            "the render operation (e.g., 'daemon.dispatch.render'). The "
+            "dispatch span is what discriminates 'embed ran concurrently "
+            "with render' from 'embed waited behind render' in the GM panel."
+        )
+
+    def test_embed_span_records_lock_name_attribute(self):
+        """The span must carry an attribute identifying the lock held.
+
+        Without a ``lock_name`` attribute, a silent regression to a shared
+        lock would still produce dispatch spans with the same names — the
+        GM panel could not distinguish the regression. Recording the
+        acquired lock is what makes the span a lie detector.
+        """
+        block = _embed_handler_block()
+        # Accept either set_attribute or attributes kwarg on span creation.
+        lock_attr_pattern = re.compile(
+            r"set_attribute\s*\(\s*[\"']lock_name[\"']\s*,\s*[\"']embed_lock[\"']",
+        )
+        assert lock_attr_pattern.search(block), (
+            "Embed dispatch span must record `lock_name=\"embed_lock\"` as "
+            "an attribute. This is the signal the GM panel uses to verify "
+            "embed acquired embed_lock (not render_lock) — the 37-23 "
+            "invariant made externally observable."
+        )
+
+    def test_render_span_records_lock_name_attribute(self):
+        block = _render_handler_block()
+        lock_attr_pattern = re.compile(
+            r"set_attribute\s*\(\s*[\"']lock_name[\"']\s*,\s*[\"']render_lock[\"']",
+        )
+        assert lock_attr_pattern.search(block), (
+            "Render dispatch span must record `lock_name=\"render_lock\"` "
+            "as an attribute so the GM panel can observe which lock is "
+            "held during which operation."
+        )
+
+
+class TestDocstringDescribesNewInvariant:
+    """WorkerPool.embed docstring must accurately describe the post-37-23 contract.
+
+    Positive contract (both required):
+      1. Names ``embed_lock`` — tells future readers which lock serializes embed.
+      2. Names ``CPU`` — tells future readers embed is off MPS.
+
+    Also a negative: no stale ``render_lock`` reference that implies the old
+    shared-lock pattern.
+
+    Additionally: the docstring must not claim ``embed()`` itself acquires the
+    lock — the caller holds embed_lock, not the method (see daemon.py dispatch
+    in _handle_client). This is a correctness claim about responsibility, not
+    just wording style.
+    """
+
+    def test_docstring_names_embed_lock(self):
+        doc = inspect.getdoc(WorkerPool.embed) or ""
+        assert "embed_lock" in doc, (
+            "WorkerPool.embed docstring must mention embed_lock so future "
+            "readers know which lock serializes embed calls (story 37-23)"
+        )
+
+    def test_docstring_names_cpu_device(self):
+        doc = inspect.getdoc(WorkerPool.embed) or ""
+        assert "CPU" in doc, (
+            "WorkerPool.embed docstring must mention CPU — the device "
+            "invariant is load-bearing (prevents the 37-5 MPS deadlock "
+            "from returning)"
+        )
+
+    def test_docstring_has_no_stale_render_lock_reference(self):
         doc = inspect.getdoc(WorkerPool.embed) or ""
         assert "render_lock" not in doc, (
             "WorkerPool.embed docstring still references render_lock — "
             "story 37-23 moved embed off MPS. Update the docstring to "
             "describe embed_lock + CPU device invariant."
+        )
+
+    def test_docstring_places_lock_responsibility_on_caller(self):
+        """The caller holds embed_lock in _handle_client; pool.embed does not.
+
+        A docstring that implies the method handles serialization (e.g., by
+        saying "serialize ... via embed_lock" with the method as the subject)
+        misleads future maintainers into thinking they can remove the
+        caller-side lock. The docstring MUST positively state that the
+        caller is responsible.
+
+        Reject wordings that imply method-as-locker; require wordings that
+        make the caller contract explicit.
+        """
+        doc_lower = (inspect.getdoc(WorkerPool.embed) or "").lower()
+
+        # Negative: method-as-serializer phrasings.
+        forbidden_phrases = [
+            "acquire embed_lock",
+            "acquires embed_lock",
+            "acquiring embed_lock",
+            "serialize against",
+            "serializes against",
+            "serializes embed",
+        ]
+        for phrase in forbidden_phrases:
+            assert phrase not in doc_lower, (
+                f"WorkerPool.embed docstring contains {phrase!r}, which "
+                f"implies the method itself serializes via embed_lock. The "
+                f"caller in _handle_client holds the lock. Reword to say "
+                f"the caller must hold embed_lock before invoking."
+            )
+
+        # Positive: docstring must name the caller's responsibility.
+        # Accept any of these phrasings that make caller-ownership explicit.
+        caller_phrases = [
+            "caller must hold",
+            "caller holds",
+            "caller-held",
+            "caller must acquire",
+            "hold embed_lock before",
+        ]
+        assert any(p in doc_lower for p in caller_phrases), (
+            "WorkerPool.embed docstring must positively state that the "
+            "CALLER is responsible for holding embed_lock (e.g., 'caller "
+            "must hold embed_lock before invoking'). Without this, future "
+            "readers won't know the serialization contract lives at the "
+            "dispatch site in _handle_client, not in pool.embed itself."
         )
