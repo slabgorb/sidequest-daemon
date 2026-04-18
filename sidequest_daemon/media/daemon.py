@@ -33,7 +33,8 @@ PID_PATH = Path("/tmp/sidequest-renderer.pid")
 # Story 37-23: OTEL tracer for dispatch-level instrumentation. The GM panel
 # consumes these spans via the ADR-058 Claude-subprocess OTEL passthrough to
 # verify that the lock split is actually delivering concurrent render+embed
-# at runtime — the CLAUDE.md "OTEL as Illusionism detector" principle.
+# at runtime — per the CLAUDE.md OTEL obligation (subsystem fixes must be
+# GM-panel-visible: "The GM panel is the lie detector").
 tracer = trace.get_tracer("sidequest_daemon.media.daemon")
 
 log = logging.getLogger(__name__)
@@ -390,7 +391,17 @@ async def _handle_client(
                         try:
                             result = await asyncio.to_thread(pool.render, params)
                             _write(writer, req_id, result=result)
+                        except asyncio.CancelledError:
+                            # Client disconnect is the most common failure mode;
+                            # mark the span so cancellations are distinguishable
+                            # from successful renders in the GM panel.
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", "CancelledError")
+                            raise
                         except Exception as e:
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", type(e).__name__)
+                            log.exception("render.failed — tier=%s", params.get("tier", ""))
                             _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
             elif method == "embed":
                 # Story 15-7: Generate sentence embeddings for lore fragments.
@@ -435,6 +446,15 @@ async def _handle_client(
                                 "model": "all-MiniLM-L6-v2",
                                 "latency_ms": latency_ms,
                             })
+                        except asyncio.CancelledError:
+                            # Client disconnect — mark span and propagate so the
+                            # event loop can unwind cleanly. CancelledError is a
+                            # BaseException and would otherwise bypass the
+                            # Exception handler below, leaving the span
+                            # attributes unset.
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", "CancelledError")
+                            raise
                         except Exception as e:
                             # No silent fallback — fail loud with structured error.
                             # Guard against empty str(exception) — some exceptions
