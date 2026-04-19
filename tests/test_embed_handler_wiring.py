@@ -114,12 +114,29 @@ class TestEmbedHandlerWiring:
             "constructing EmbedWorker() inline is the deadlock pattern"
         )
 
-    def test_handler_acquires_render_lock(self):
+    def test_handler_acquires_embed_lock(self):
+        """Post-37-23: embed acquires embed_lock (NOT render_lock).
+
+        The shared-lock design from 37-5 was replaced in 37-23: embed now
+        runs on CPU (see EmbedWorker._load_model) with its own lock, so it
+        no longer contends with Flux renders on MPS. The 37-5 deadlock
+        (concurrent MPS model sessions) is prevented by device separation,
+        not by lock sharing.
+        """
         block = _embed_handler_block()
-        assert "async with render_lock:" in block, (
-            "embed handler must acquire render_lock to serialize MPS access "
-            "with the Flux render path — otherwise concurrent model sessions "
-            "deadlock the Metal driver"
+        # Strip comments so documentation references of the old lock name
+        # (which intentionally explain the 37-23 transition) don't satisfy
+        # the negative check.
+        code_only = "\n".join(
+            line for line in block.splitlines() if not line.lstrip().startswith("#")
+        )
+        assert "async with embed_lock:" in code_only, (
+            "embed handler must acquire embed_lock — the 37-23 split "
+            "decoupled embed from render serialization"
+        )
+        assert "async with render_lock:" not in code_only, (
+            "embed handler must NOT acquire render_lock — that re-couples "
+            "embed to Flux serialization, which is the 37-23 regression"
         )
 
     def test_handler_does_not_construct_worker_inline(self):

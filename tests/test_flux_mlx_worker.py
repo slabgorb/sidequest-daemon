@@ -274,7 +274,7 @@ class TestRender:
             "seed": 0,
         })
         call_kwargs = mock_inst.generate_image.call_args[1]
-        assert call_kwargs["steps"] == 4
+        assert call_kwargs["num_inference_steps"] == 4
 
     def test_render_passes_correct_dimensions(self, tmp_path, mock_mflux, mock_pil_image):
         """Render must pass tier-specific width/height to mflux.generate()."""

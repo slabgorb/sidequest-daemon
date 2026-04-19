@@ -25,8 +25,17 @@ import sys
 import tempfile
 from pathlib import Path
 
+from opentelemetry import trace
+
 SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
 PID_PATH = Path("/tmp/sidequest-renderer.pid")
+
+# Story 37-23: OTEL tracer for dispatch-level instrumentation. The GM panel
+# consumes these spans via the ADR-058 Claude-subprocess OTEL passthrough to
+# verify that the lock split is actually delivering concurrent render+embed
+# at runtime — per the CLAUDE.md OTEL obligation (subsystem fixes must be
+# GM-panel-visible: "The GM panel is the lie detector").
+tracer = trace.get_tracer("sidequest_daemon.media.daemon")
 
 log = logging.getLogger(__name__)
 
@@ -49,7 +58,12 @@ class EmbedWorker:
     def _load_model(self):
         if self._model is None:
             from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self._model_name)
+            # Story 37-23: pin to CPU. MPS is reserved for Flux renders —
+            # running embed on CPU gives it an independent device so the
+            # embed path never contends with in-flight image generation
+            # and can never re-trigger the 2026-04-10 concurrent-MPS-session
+            # deadlock that story 37-5 originally fixed by sharing a lock.
+            self._model = SentenceTransformer(self._model_name, device="cpu")
         return self._model
 
     def generate_embedding(self, text: str) -> list[float]:
@@ -120,7 +134,7 @@ class WorkerPool:
             }
         import time
         start = time.monotonic()
-        log.info("Loading SentenceTransformer all-MiniLM-L6-v2 on MPS...")
+        log.info("Loading SentenceTransformer all-MiniLM-L6-v2 on CPU...")
         self._embed = EmbedWorker()
         self._embed._load_model()
         self._embed_warmup_ms = int((time.monotonic() - start) * 1000)
@@ -140,9 +154,12 @@ class WorkerPool:
     def embed(self, text: str) -> list[float]:
         """Generate a sentence embedding via the singleton EmbedWorker.
 
-        Synchronous — call from ``asyncio.to_thread`` and acquire the
-        ``render_lock`` to serialize against in-flight Flux renders on the
-        same MPS device.
+        Synchronous — call from ``asyncio.to_thread``. The caller must hold
+        ``embed_lock`` before invoking (see ``_handle_client`` dispatch);
+        this method itself does not take a lock. Embed runs on CPU (see
+        ``EmbedWorker._load_model``) so it has an independent device from
+        Flux/MPS and cannot contend with in-flight image generation
+        (story 37-23).
         """
         self._ensure_embed()
         assert self._embed is not None  # _ensure_embed populates it
@@ -186,6 +203,7 @@ async def _handle_client(
     writer: asyncio.StreamWriter,
     pool: WorkerPool,
     render_lock: asyncio.Lock,
+    embed_lock: asyncio.Lock,
 ) -> None:
     """Handle a single client connection — read JSON lines, dispatch, respond."""
     peer = writer.get_extra_info("peername") or "unix-client"
@@ -363,53 +381,90 @@ async def _handle_client(
                         composed.positive_prompt[:150],
                     )
 
-                # Serialize renders — only one GPU operation at a time
-                async with render_lock:
-                    try:
-                        result = await asyncio.to_thread(pool.render, params)
-                        _write(writer, req_id, result=result)
-                    except Exception as e:
-                        _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
+                # Serialize renders — only one GPU operation at a time.
+                # Story 37-23: wrap dispatch in OTEL span so the GM panel can
+                # verify render acquired render_lock (not embed_lock).
+                with tracer.start_as_current_span("daemon.dispatch.render") as span:
+                    span.set_attribute("lock_name", "render_lock")
+                    span.set_attribute("tier", params.get("tier", ""))
+                    async with render_lock:
+                        try:
+                            result = await asyncio.to_thread(pool.render, params)
+                            _write(writer, req_id, result=result)
+                        except asyncio.CancelledError:
+                            # Client disconnect is the most common failure mode;
+                            # mark the span so cancellations are distinguishable
+                            # from successful renders in the GM panel.
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", "CancelledError")
+                            raise
+                        except Exception as e:
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", type(e).__name__)
+                            log.exception("render.failed — tier=%s", params.get("tier", ""))
+                            _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
             elif method == "embed":
                 # Story 15-7: Generate sentence embeddings for lore fragments.
                 #
-                # 2026-04-10 playtest deadlock fix: route through the
-                # singleton ``pool.embed`` instead of constructing a fresh
-                # ``EmbedWorker()`` per request, run on a worker thread via
-                # ``asyncio.to_thread`` instead of blocking the event loop,
-                # and acquire the SAME ``render_lock`` the Flux render path
-                # uses so we don't race a second model session on the MPS
-                # device. Embedding is fast (<100ms once warm) so the lock
-                # is not a throughput concern.
+                # Architecture (post-37-23):
+                # - Route through the singleton ``pool.embed`` — NEVER
+                #   construct ``EmbedWorker()`` per request (that was the
+                #   2026-04-10 playtest deadlock root cause).
+                # - Run on a worker thread via ``asyncio.to_thread`` to
+                #   keep the event loop unblocked during inference.
+                # - Acquire ``embed_lock`` (NOT ``render_lock``). Embed
+                #   runs on CPU and Flux runs on MPS — independent devices,
+                #   independent locks. Under the old shared-lock design,
+                #   10ms embeds serialized behind 5–60s Flux renders; now
+                #   they run in parallel.
                 text = params.get("text", "")
                 if not text or not text.strip():
                     _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "embed requires non-empty 'text' field"})
                     continue
-                async with render_lock:
-                    try:
-                        import time
-                        start = time.monotonic()
-                        embedding = await asyncio.to_thread(pool.embed, text)
-                        latency_ms = int((time.monotonic() - start) * 1000)
-                        log.info(
-                            "embed.generated — model=%s text_len=%d latency_ms=%d",
-                            "all-MiniLM-L6-v2",
-                            len(text),
-                            latency_ms,
-                        )
-                        _write(writer, req_id, result={
-                            "embedding": embedding,
-                            "model": "all-MiniLM-L6-v2",
-                            "latency_ms": latency_ms,
-                        })
-                    except Exception as e:
-                        # No silent fallback — fail loud with structured error.
-                        # Guard against empty str(exception) — some exceptions
-                        # (e.g. RuntimeError("")) produce empty strings, which
-                        # surface as "Unknown error" on the Rust/GM panel side.
-                        error_msg = str(e) or f"{type(e).__name__} (no message)"
-                        log.exception("embed.failed — text_len=%d", len(text))
-                        _write(writer, req_id, error={"code": "EMBED_FAILED", "message": error_msg})
+                # Story 37-23: wrap dispatch in OTEL span. The lock_name
+                # attribute is the lie detector — if a future regression
+                # re-shares the locks, this attribute makes the mistake
+                # observable in the GM panel rather than silent.
+                with tracer.start_as_current_span("daemon.dispatch.embed") as span:
+                    span.set_attribute("lock_name", "embed_lock")
+                    span.set_attribute("text_len", len(text))
+                    async with embed_lock:
+                        try:
+                            import time
+                            start = time.monotonic()
+                            embedding = await asyncio.to_thread(pool.embed, text)
+                            latency_ms = int((time.monotonic() - start) * 1000)
+                            span.set_attribute("work_ms", latency_ms)
+                            log.info(
+                                "embed.generated — model=%s text_len=%d latency_ms=%d",
+                                "all-MiniLM-L6-v2",
+                                len(text),
+                                latency_ms,
+                            )
+                            _write(writer, req_id, result={
+                                "embedding": embedding,
+                                "model": "all-MiniLM-L6-v2",
+                                "latency_ms": latency_ms,
+                            })
+                        except asyncio.CancelledError:
+                            # Client disconnect — mark span and propagate so the
+                            # event loop can unwind cleanly. CancelledError is a
+                            # BaseException and would otherwise bypass the
+                            # Exception handler below, leaving the span
+                            # attributes unset.
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", "CancelledError")
+                            raise
+                        except Exception as e:
+                            # No silent fallback — fail loud with structured error.
+                            # Guard against empty str(exception) — some exceptions
+                            # (e.g. RuntimeError("")) produce empty strings, which
+                            # surface as "Unknown error" on the Rust/GM panel side.
+                            error_msg = str(e) or f"{type(e).__name__} (no message)"
+                            span.set_attribute("error", True)
+                            span.set_attribute("error_type", type(e).__name__)
+                            log.exception("embed.failed — text_len=%d", len(text))
+                            _write(writer, req_id, error={"code": "EMBED_FAILED", "message": error_msg})
             else:
                 _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
     except (ConnectionResetError, BrokenPipeError):
@@ -459,6 +514,10 @@ async def _run_daemon(
         os.environ["SIDEQUEST_GENRE_PACKS"] = str(genre_packs)
     pool = WorkerPool(output_dir)
     render_lock = asyncio.Lock()
+    # Story 37-23: embed gets its own lock. Flux runs on MPS (render_lock);
+    # embed runs on CPU (embed_lock). Independent devices, independent locks —
+    # a long Flux render no longer blocks a ~30ms embed request.
+    embed_lock = asyncio.Lock()
 
     # Initialize audio pipeline via factory
     from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
@@ -485,7 +544,7 @@ async def _run_daemon(
         SOCKET_PATH.unlink()
 
     server = await asyncio.start_unix_server(
-        lambda r, w: _handle_client(r, w, pool, render_lock),
+        lambda r, w: _handle_client(r, w, pool, render_lock, embed_lock),
         path=str(SOCKET_PATH),
     )
 
