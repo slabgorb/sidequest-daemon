@@ -144,9 +144,9 @@ class TestTierConfigs:
         assert "w" in cfg, f"tier {tier} missing 'w'"
         assert "h" in cfg, f"tier {tier} missing 'h'"
 
-    def test_text_overlay_uses_schnell(self, mock_mflux):
+    def test_text_overlay_uses_dev(self, mock_mflux):
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-        assert FluxMLXWorker.TIER_CONFIGS["text_overlay"]["model"] == "schnell"
+        assert FluxMLXWorker.TIER_CONFIGS["text_overlay"]["model"] == "dev"
 
     def test_cartography_uses_dev(self, mock_mflux):
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
@@ -269,7 +269,7 @@ class TestRender:
         """Render must pass tier-specific step count to mflux.generate()."""
         worker, mock_inst = self._make_loaded_worker(tmp_path, mock_mflux, mock_pil_image)
         worker.render({
-            "tier": "text_overlay",  # schnell, 4 steps
+            "tier": "text_overlay",  # dev, 4 steps
             "positive_prompt": "title card",
             "seed": 0,
         })
@@ -481,7 +481,7 @@ class TestWarmUp:
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
-        worker.load_model("schnell")
+        worker.load_model("dev")
         result = worker.warm_up()
         assert "warmup_ms" in result
         assert isinstance(result["warmup_ms"], int)
