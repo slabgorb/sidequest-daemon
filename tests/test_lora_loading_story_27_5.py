@@ -1,7 +1,7 @@
 """RED-phase tests for Story 27-5: LoRA loading verification — genre style LoRAs via mflux.
 
 Tests verify:
-- FluxMLXWorker accepts lora_path in render params and passes to Flux1 constructor
+- FluxMLXWorker accepts lora_paths[] in render params and passes to Flux1 constructor
 - LoRA weights loaded via Flux1(lora_paths=[...], lora_scales=[...]) — not from_name()
 - Genre pack LoRA discovery from content path
 - .safetensors files accepted as lora_paths
@@ -106,7 +106,8 @@ class TestLoRAParameterAcceptance:
         result = worker.render({
             "tier": "scene_illustration",
             "prompt": "a dark forest",
-            "lora_path": "/path/to/style.safetensors",
+            "lora_paths": ["/path/to/style.safetensors"],
+            "lora_scales": [1.0],
             "seed": 42,
         })
 
@@ -128,7 +129,8 @@ class TestLoRAParameterAcceptance:
         worker.render({
             "tier": "scene_illustration",
             "prompt": "a dark forest",
-            "lora_path": "/path/to/style.safetensors",
+            "lora_paths": ["/path/to/style.safetensors"],
+            "lora_scales": [1.0],
             "seed": 42,
         })
 
@@ -157,8 +159,8 @@ class TestLoRAParameterAcceptance:
         worker.render({
             "tier": "scene_illustration",
             "prompt": "a dark forest",
-            "lora_path": "/path/to/style.safetensors",
-            "lora_scale": 0.8,
+            "lora_paths": ["/path/to/style.safetensors"],
+            "lora_scales": [0.8],
             "seed": 42,
         })
 
@@ -198,7 +200,8 @@ class TestNoPyTorchDependency:
             worker.render({
                 "tier": "portrait",
                 "prompt": "a warrior",
-                "lora_path": "/path/to/style.safetensors",
+                "lora_paths": ["/path/to/style.safetensors"],
+                "lora_scales": [1.0],
                 "seed": 1,
             })
         # If we get here without ImportError, torch was not imported
@@ -225,7 +228,8 @@ class TestMfluxLoRAComposition:
         worker.render({
             "tier": "scene_illustration",
             "prompt": "test",
-            "lora_path": "/path/to/lora.safetensors",
+            "lora_paths": ["/path/to/lora.safetensors"],
+            "lora_scales": [1.0],
             "seed": 0,
         })
 
@@ -253,7 +257,8 @@ class TestMfluxLoRAComposition:
         worker.render({
             "tier": "scene_illustration",
             "prompt": "test",
-            "lora_path": "/path/to/lora.safetensors",
+            "lora_paths": ["/path/to/lora.safetensors"],
+            "lora_scales": [1.0],
             "seed": 0,
         })
 
@@ -277,9 +282,16 @@ class TestMfluxLoRAComposition:
 class TestGenrePackLoRADiscovery:
     """Genre LoRA files from content path must be discoverable."""
 
-    def test_safetensors_path_accepted(self, mock_mflux, mock_pil_image, tmp_path):
+    def test_safetensors_path_accepted(self, mock_mflux, mock_pil_image, tmp_path, monkeypatch):
         """A .safetensors file path should be passed through to Flux1."""
+        from sidequest_daemon.media.workers import flux_mlx_worker
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
+
+        # Task 4.2b adds a render-time matched-key counter that imports
+        # mflux's FluxLoRAMapping. The mock_mflux fixture in this file
+        # doesn't stub that submodule, so pre-seed the cache to bypass
+        # the import path. Restored on test teardown by monkeypatch.
+        monkeypatch.setattr(flux_mlx_worker, "_cached_lora_patterns", [])
 
         mock_model = MagicMock()
         mock_model.generate_image.return_value = mock_pil_image
@@ -292,7 +304,8 @@ class TestGenrePackLoRADiscovery:
         worker.render({
             "tier": "portrait",
             "prompt": "test",
-            "lora_path": str(lora_file),
+            "lora_paths": [str(lora_file)],
+            "lora_scales": [1.0],
             "seed": 0,
         })
 
@@ -350,7 +363,8 @@ class TestLoRAvsBaseRender:
         worker.render({
             "tier": "scene_illustration",
             "prompt": "lora render",
-            "lora_path": "/path/to/style.safetensors",
+            "lora_paths": ["/path/to/style.safetensors"],
+            "lora_scales": [1.0],
             "seed": 1,
         })
 
@@ -380,7 +394,8 @@ class TestLoRAErrorHandling:
             worker.render({
                 "tier": "scene_illustration",
                 "prompt": "test",
-                "lora_path": "/nonexistent/lora.safetensors",
+                "lora_paths": ["/nonexistent/lora.safetensors"],
+                "lora_scales": [1.0],
                 "seed": 0,
             })
 
@@ -425,8 +440,8 @@ class TestLoRAOTELMetadata:
         worker.render({
             "tier": "scene_illustration",
             "prompt": "test",
-            "lora_path": "/path/to/style.safetensors",
-            "lora_scale": 0.7,
+            "lora_paths": ["/path/to/style.safetensors"],
+            "lora_scales": [0.7],
             "seed": 0,
         })
 

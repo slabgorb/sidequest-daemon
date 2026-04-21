@@ -450,17 +450,17 @@ class TestCleanup:
 class TestNoTorchDependency:
     """FluxMLXWorker must NOT import torch at module or runtime level."""
 
-    def test_no_torch_in_module(self, mock_mflux):
-        """The module must not import torch — entire point of the migration."""
-        import importlib
+    def test_no_torch_in_module(self):
+        """The module must not import torch — entire point of the migration.
 
-        # Clear any cached import
-        mod_name = "sidequest_daemon.media.workers.flux_mlx_worker"
-        if mod_name in sys.modules:
-            del sys.modules[mod_name]
-
-        mod = importlib.import_module(mod_name)
-        source = Path(mod.__file__).read_text()
+        Reads the source file directly. The previous version did
+        `del sys.modules[...]` + reimport, which created two distinct module
+        objects in memory and broke any later test that monkeypatched the
+        *new* module while the test fixture held a reference to the *old*
+        one (Task 4.2b's matched-key tests hit this).
+        """
+        from sidequest_daemon.media.workers import flux_mlx_worker
+        source = Path(flux_mlx_worker.__file__).read_text()
         assert "import torch" not in source, "FluxMLXWorker must not import torch"
         assert "from torch" not in source, "FluxMLXWorker must not import from torch"
         assert "from diffusers" not in source, "FluxMLXWorker must not import diffusers"
