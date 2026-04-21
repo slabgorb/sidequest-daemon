@@ -231,7 +231,11 @@ class PromptComposer:
                     break
 
         if tags is None:
-            return location
+            raise ValueError(
+                f"No visual_tag_override or default for location type {location!r}; "
+                f"add it to the world's visual_style.yaml::visual_tag_overrides "
+                f"(the fantasy-biased _DEFAULT_LOCATION_TAGS does not cover non-fantasy genres)."
+            )
 
         # Apply location weight — truncate tag list when weight < 1.0
         weight = self.weights.get("location", 1.0)
