@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pydantic>=2.0",
     "mlx>=0.18",
-    "mflux>=0.4",
+    "mflux>=0.4,<0.5",  # pin: flux_mlx_worker depends on FluxLoRAMapping.get_mapping() shape; bump only after verifying.
     "transformers>=4.40",
     "safetensors>=0.4",
     "pygame-ce>=2.5",

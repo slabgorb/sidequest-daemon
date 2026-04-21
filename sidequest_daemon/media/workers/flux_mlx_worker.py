@@ -118,11 +118,16 @@ class FluxMLXWorker:
             span.set_attribute("warmup.elapsed_ms", elapsed_ms)
             return {"warmup_ms": elapsed_ms}
 
-    def _build_lora_model(self, variant: str, lora_path: str, lora_scale: float) -> object:
-        """Construct a Flux1 instance with LoRA weights.
+    def _build_lora_model(
+        self, variant: str, lora_paths: list[str], lora_scales: list[float]
+    ) -> object:
+        """Construct a Flux1 instance with one or more LoRA adapters applied.
 
         Uses Flux1(model_config=..., lora_paths=..., lora_scales=...) because
         Flux1.from_name() does not accept LoRA parameters.
+
+        Per ADR-083 (Decision 4), the protocol is array-only. Callers pass
+        lists even for single-LoRA renders — no singleton compat shim.
         """
         from mflux.models.flux.variants.txt2img.flux import Flux1
         from mflux.models.common.config.model_config import ModelConfig
@@ -130,12 +135,17 @@ class FluxMLXWorker:
         config_factory = {"dev": ModelConfig.dev, "schnell": ModelConfig.schnell}
         if variant not in config_factory:
             raise ValueError(f"Unknown variant for LoRA: {variant!r}")
+        if len(lora_paths) != len(lora_scales):
+            raise ValueError(
+                f"lora_paths ({len(lora_paths)}) / lora_scales ({len(lora_scales)}) "
+                f"length mismatch"
+            )
 
         return Flux1(
             model_config=config_factory[variant](),
             quantize=self.QUANTIZE,
-            lora_paths=[lora_path],
-            lora_scales=[lora_scale],
+            lora_paths=list(lora_paths),
+            lora_scales=list(lora_scales),
         )
 
     def render(self, params: dict) -> dict:
@@ -169,25 +179,37 @@ class FluxMLXWorker:
 
                 prompt = self._compose_prompt(params)
                 seed = params.get("seed", 0)
-                lora_path = params.get("lora_path")
-                lora_scale = params.get("lora_scale", 1.0)
+                # Per ADR-083 Decision 4: protocol is array-only. Legacy
+                # singleton params (lora_path/lora_scale) are no longer
+                # accepted — no silent fallback. Caller must provide arrays.
+                if "lora_path" in params or "lora_scale" in params:
+                    raise ValueError(
+                        "legacy singleton params lora_path/lora_scale are no longer "
+                        "accepted — use lora_paths[] and lora_scales[] arrays."
+                    )
+                lora_paths: list[str] = list(params.get("lora_paths") or [])
+                lora_scales: list[float] = list(params.get("lora_scales") or [])
 
                 span.set_attribute("render.tier", tier_name)
                 span.set_attribute("render.seed", seed)
                 span.set_attribute("render.variant", variant)
                 span.set_attribute("render.width", tier_cfg["w"])
                 span.set_attribute("render.height", tier_cfg["h"])
+                # LoRA attributes attach to the existing flux_mlx.render span
+                # per ADR-083 Decision 3 (Architect correction #1) — one span
+                # per render, not a separate render.lora span.
+                span.set_attribute("render.lora.stack_size", len(lora_paths))
 
-                if lora_path:
-                    span.set_attribute("render.lora_path", lora_path)
-                    span.set_attribute("render.lora_scale", lora_scale)
+                if lora_paths:
+                    span.set_attribute("render.lora.files", lora_paths)
+                    span.set_attribute("render.lora.scales", lora_scales)
                     log.info(
-                        "FLUX MLX RENDER [%s] seed=%s lora=%s scale=%s",
-                        tier_name, seed, lora_path, lora_scale,
+                        "FLUX MLX RENDER [%s] seed=%s loras=%s scales=%s",
+                        tier_name, seed, lora_paths, lora_scales,
                     )
-                    model = self._build_lora_model(variant, lora_path, lora_scale)
+                    model = self._build_lora_model(variant, lora_paths, lora_scales)
                 else:
-                    log.info("FLUX MLX RENDER [%s] seed=%s", tier_name, seed)
+                    log.info("FLUX MLX RENDER [%s] seed=%s (no LoRA)", tier_name, seed)
                     self._ensure_variant(variant)
                     model = self.models[variant]
 
