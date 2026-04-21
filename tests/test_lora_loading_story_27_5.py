@@ -282,9 +282,16 @@ class TestMfluxLoRAComposition:
 class TestGenrePackLoRADiscovery:
     """Genre LoRA files from content path must be discoverable."""
 
-    def test_safetensors_path_accepted(self, mock_mflux, mock_pil_image, tmp_path):
+    def test_safetensors_path_accepted(self, mock_mflux, mock_pil_image, tmp_path, monkeypatch):
         """A .safetensors file path should be passed through to Flux1."""
+        from sidequest_daemon.media.workers import flux_mlx_worker
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
+
+        # Task 4.2b adds a render-time matched-key counter that imports
+        # mflux's FluxLoRAMapping. The mock_mflux fixture in this file
+        # doesn't stub that submodule, so pre-seed the cache to bypass
+        # the import path. Restored on test teardown by monkeypatch.
+        monkeypatch.setattr(flux_mlx_worker, "_cached_lora_patterns", [])
 
         mock_model = MagicMock()
         mock_model.generate_image.return_value = mock_pil_image

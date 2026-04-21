@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import time
 import uuid
@@ -19,6 +20,101 @@ from pathlib import Path
 from opentelemetry import trace
 
 log = logging.getLogger(__name__)
+
+
+# ── ADR-083 Decision 3 Layer B: matched-key visibility ─────────────────
+# Cache for FluxLoRAMapping.get_mapping() — the mapping is static across
+# the daemon's lifetime, so we validate its shape once on first use and
+# memoize the flattened pattern list. Lazy so module import stays cheap.
+_cached_lora_patterns: list[str] | None = None
+
+
+def _validate_and_flatten_lora_patterns() -> list[str]:
+    """Pull mflux's FluxLoRAMapping and flatten its pattern lists.
+
+    Fails loudly if mflux's API has drifted from what Task 4.2b assumed:
+    a list[LoRATarget] where each target exposes possible_{up,down,alpha}_patterns
+    as iterable strings. A drift here means the matched-key count would be
+    silently wrong — exactly the silent-fallback this instrumentation
+    exists to surface — so we crash on first call instead of degrading.
+    """
+    from mflux.models.common.lora.mapping.lora_mapping import LoRATarget
+    from mflux.models.flux.weights.flux_lora_mapping import FluxLoRAMapping
+
+    targets = FluxLoRAMapping.get_mapping()
+    if not isinstance(targets, list):
+        raise RuntimeError(
+            f"mflux API drift: FluxLoRAMapping.get_mapping() returned {type(targets).__name__}, "
+            f"expected list — Task 4.2b matched-key counting cannot proceed."
+        )
+    if not targets:
+        raise RuntimeError(
+            "mflux API drift: FluxLoRAMapping.get_mapping() returned an empty list — "
+            "matched-key counts would all be zero."
+        )
+
+    patterns: list[str] = []
+    for i, target in enumerate(targets):
+        if not isinstance(target, LoRATarget):
+            raise RuntimeError(
+                f"mflux API drift: target[{i}] is {type(target).__name__}, expected LoRATarget."
+            )
+        for attr in ("possible_up_patterns", "possible_down_patterns", "possible_alpha_patterns"):
+            if not hasattr(target, attr):
+                raise RuntimeError(
+                    f"mflux API drift: LoRATarget at index {i} missing {attr}."
+                )
+            patterns.extend(getattr(target, attr))
+    return patterns
+
+
+def _get_validated_lora_patterns() -> list[str]:
+    """Memoized accessor — validates once, reuses for the daemon's lifetime."""
+    global _cached_lora_patterns
+    if _cached_lora_patterns is None:
+        _cached_lora_patterns = _validate_and_flatten_lora_patterns()
+    return _cached_lora_patterns
+
+
+def _count_matched_keys_for_file(path: str, patterns: list[str]) -> int:
+    """Count how many keys in a LoRA safetensors file match any mflux pattern.
+
+    Mirrors mflux's LoRALoader._match_pattern: a {block} placeholder in a
+    pattern resolves against numbers found in the weight key. A key counts
+    once even if multiple patterns match (some keys map to several targets,
+    e.g. fused-QKV; the count we want is "keys mflux would touch", not
+    "patterns matched"). Unreadable files return 0 — matches mflux's own
+    behaviour, since the render itself will fail loudly on the same path.
+    """
+    try:
+        from safetensors import safe_open
+        with safe_open(path, framework="pt") as f:
+            keys = list(f.keys())
+    except Exception as exc:
+        # safetensors_rust.SafetensorError isn't an OSError/ValueError subclass,
+        # so we have to catch broadly. The render itself will fail-loudly on
+        # the same unreadable path; this just prevents instrumentation from
+        # masking the real error with a cryptic counter exception.
+        log.warning("matched-key count: cannot open LoRA %s: %s", path, exc)
+        return 0
+
+    matched = 0
+    for key in keys:
+        numbers_in_key = re.findall(r"\d+", key)
+        for pattern in patterns:
+            if "{block}" in pattern:
+                hit = False
+                for num_str in numbers_in_key:
+                    if key == pattern.replace("{block}", num_str):
+                        hit = True
+                        break
+                if hit:
+                    matched += 1
+                    break
+            elif key == pattern:
+                matched += 1
+                break
+    return matched
 
 
 class FluxMLXWorker:
@@ -118,6 +214,19 @@ class FluxMLXWorker:
             span.set_attribute("warmup.elapsed_ms", elapsed_ms)
             return {"warmup_ms": elapsed_ms}
 
+    def _count_matched_keys(self, lora_paths: list[str]) -> list[int]:
+        """Per-file count of LoRA keys mflux's loader will recognise.
+
+        ADR-083 Decision 3 Layer B: a stale, mis-trained, or wrong-flavour
+        LoRA can survive `608/608 keys matched` from the loader yet
+        contribute almost nothing to the render. Surfacing this count on
+        every render lets the GM panel spot adapters that are silently
+        no-ops without waiting for a human to notice "that doesn't look
+        right". Returns one int per input path, in order.
+        """
+        patterns = _get_validated_lora_patterns()
+        return [_count_matched_keys_for_file(p, patterns) for p in lora_paths]
+
     def _build_lora_model(
         self, variant: str, lora_paths: list[str], lora_scales: list[float]
     ) -> object:
@@ -203,9 +312,15 @@ class FluxMLXWorker:
                 if lora_paths:
                     span.set_attribute("render.lora.files", lora_paths)
                     span.set_attribute("render.lora.scales", lora_scales)
+                    # ADR-083 Decision 3 Layer B (Task 4.2b): per-file count
+                    # of how many LoRA keys mflux's mapping recognises. A
+                    # zero or near-zero entry here means that adapter is
+                    # effectively a no-op even if loading "succeeded".
+                    matched_keys = self._count_matched_keys(lora_paths)
+                    span.set_attribute("render.lora.matched_keys", matched_keys)
                     log.info(
-                        "FLUX MLX RENDER [%s] seed=%s loras=%s scales=%s",
-                        tier_name, seed, lora_paths, lora_scales,
+                        "FLUX MLX RENDER [%s] seed=%s loras=%s scales=%s matched=%s",
+                        tier_name, seed, lora_paths, lora_scales, matched_keys,
                     )
                     model = self._build_lora_model(variant, lora_paths, lora_scales)
                 else:
