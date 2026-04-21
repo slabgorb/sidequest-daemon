@@ -187,13 +187,13 @@ class TestRenderSpan:
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
-        worker.load_model("schnell")
+        worker.load_model("dev")
         worker.render({"tier": "text_overlay", "positive_prompt": "title", "seed": 0})
 
         spans = otel_exporter.get_finished_spans()
         render_spans = [s for s in spans if s.name == "flux_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
-        assert attrs.get("render.variant") == "schnell"
+        assert attrs.get("render.variant") == "dev"
 
 
 # ---------------------------------------------------------------------------
@@ -240,7 +240,7 @@ class TestWarmUpSpan:
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
-        worker.load_model("schnell")
+        worker.load_model("dev")
         worker.warm_up()
 
         spans = otel_exporter.get_finished_spans()
@@ -255,7 +255,7 @@ class TestWarmUpSpan:
         mock_mflux.from_name.return_value = mock_instance
 
         worker = FluxMLXWorker(tmp_path)
-        worker.load_model("schnell")
+        worker.load_model("dev")
         worker.warm_up()
 
         spans = otel_exporter.get_finished_spans()

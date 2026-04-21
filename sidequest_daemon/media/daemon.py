@@ -100,19 +100,23 @@ class WorkerPool:
         self.memory_manager = ModelMemoryManager()
 
     def warm_up_flux(self) -> dict:
-        """Load and warm up Flux worker (both schnell and dev variants)."""
+        """Load and warm up Flux worker — dev variant only.
+
+        Schnell is no longer warmed up. Every genre pack's visual_style.yaml
+        declares preferred_model: dev, so schnell was loaded into memory
+        and never touched at render time. The worker still accepts
+        load_model("schnell") if explicitly requested.
+        """
         if self._flux_loaded:
             return {"worker": "flux", "status": "already_warm", "warmup_ms": 0}
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
         self._flux = FluxMLXWorker(self.output_dir / "flux")
-        log.info("Loading Flux schnell (text overlays)...")
-        self._flux.load_model("schnell")
-        log.info("Loading Flux dev (cartography)...")
+        log.info("Loading Flux dev...")
         self._flux.load_model("dev")
         result = self._flux.warm_up()
         self._flux_loaded = True
-        log.info("Flux warm — both variants (%.1fs)", result.get("warmup_ms", 0) / 1000)
-        return {"worker": "flux", "status": "warm", "variants": ["schnell", "dev"], **result}
+        log.info("Flux warm — dev (%.1fs)", result.get("warmup_ms", 0) / 1000)
+        return {"worker": "flux", "status": "warm", "variants": ["dev"], **result}
 
     def _ensure_flux(self) -> None:
         if not self._flux_loaded:

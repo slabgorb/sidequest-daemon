@@ -144,7 +144,7 @@ class FluxMLXWorker:
             "h": 768,
         },
         "text_overlay": {
-            "model": "schnell",
+            "model": "dev",
             "steps": 4,
             "guidance": 0.0,
             "w": 768,
@@ -177,7 +177,7 @@ class FluxMLXWorker:
     # Re-evaluate when pre-quantized checkpoints are available.
     QUANTIZE: int | None = None
 
-    def load_model(self, variant: str = "schnell") -> None:
+    def load_model(self, variant: str = "dev") -> None:
         """Load a Flux model variant via mflux (MLX native)."""
         tracer = trace.get_tracer("sidequest_daemon.media.workers.flux_mlx_worker")
         with tracer.start_as_current_span("flux_mlx.load_model") as span:
@@ -196,12 +196,12 @@ class FluxMLXWorker:
             self.load_model(variant)
 
     def warm_up(self) -> dict:
-        """MLX graph compilation via schnell dummy generation."""
+        """MLX graph compilation via dev dummy generation."""
         tracer = trace.get_tracer("sidequest_daemon.media.workers.flux_mlx_worker")
         with tracer.start_as_current_span("flux_mlx.warm_up") as span:
             start = time.monotonic()
 
-            self.models["schnell"].generate_image(
+            self.models["dev"].generate_image(
                 prompt="black",
                 num_inference_steps=1,
                 guidance=0.0,

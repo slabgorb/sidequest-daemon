@@ -45,7 +45,7 @@ FLUX_TIER_CONFIGS: dict[RenderTier, FluxTierConfig] = {
         height=768,
     ),
     RenderTier.TEXT_OVERLAY: FluxTierConfig(
-        model_variant="schnell",
+        model_variant="dev",
         steps=4,
         guidance_scale=0.0,
         width=768,
