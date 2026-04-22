@@ -1,20 +1,19 @@
-"""Tests for OTEL span emission in FluxMLXWorker and gpu_detect.
+"""Tests for OTEL span emission in ZImageMLXWorker and gpu_detect.
 
-Story 27-7: Verify that the MLX render pipeline emits OpenTelemetry spans
+Verifies that the Z-Image MLX render pipeline emits OpenTelemetry spans
 so the GM panel can observe model loads, renders, warm-ups, and GPU detection.
 """
 
 from __future__ import annotations
 
-import sys
-import types
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from PIL import Image
 
 
 # ---------------------------------------------------------------------------
@@ -41,47 +40,19 @@ def otel_exporter(monkeypatch):
     provider.shutdown()
 
 
-def _make_mock_mflux() -> dict:
-    """Build mock mflux module tree (same as test_flux_mlx_worker.py)."""
-    mflux = types.ModuleType("mflux")
-    mflux_models = types.ModuleType("mflux.models")
-    mflux_flux = types.ModuleType("mflux.models.flux")
-    mflux_variants = types.ModuleType("mflux.models.flux.variants")
-    mflux_txt2img = types.ModuleType("mflux.models.flux.variants.txt2img")
-    mflux_txt2img_flux = types.ModuleType("mflux.models.flux.variants.txt2img.flux")
+def _make_worker_with_mock_model(tmp_path):
+    """Build a ZImageMLXWorker whose underlying mflux model is mocked.
 
-    mock_flux1_cls = MagicMock(name="Flux1")
-    mflux_txt2img_flux.Flux1 = mock_flux1_cls
-    mflux.models = mflux_models
-    mflux_models.flux = mflux_flux
-    mflux_flux.variants = mflux_variants
-    mflux_variants.txt2img = mflux_txt2img
-    mflux_txt2img.flux = mflux_txt2img_flux
+    This avoids calling load_model() (which imports mflux) while still
+    letting render()/warm_up() exercise the OTEL span code paths.
+    """
+    from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
 
-    return {
-        "mflux": mflux,
-        "mflux.models": mflux_models,
-        "mflux.models.flux": mflux_flux,
-        "mflux.models.flux.variants": mflux_variants,
-        "mflux.models.flux.variants.txt2img": mflux_txt2img,
-        "mflux.models.flux.variants.txt2img.flux": mflux_txt2img_flux,
-    }
-
-
-@pytest.fixture()
-def mock_mflux():
-    """Patch mflux into sys.modules."""
-    mods = _make_mock_mflux()
-    with patch.dict(sys.modules, mods):
-        yield mods["mflux.models.flux.variants.txt2img.flux"].Flux1
-
-
-@pytest.fixture()
-def mock_pil_image():
-    """Mock PIL Image with save()."""
-    img = MagicMock(name="PILImage")
-    img.save = MagicMock()
-    return img
+    worker = ZImageMLXWorker(tmp_path)
+    mock_model = MagicMock(name="ZImage")
+    mock_model.generate_image.return_value = Image.new("RGB", (64, 64))
+    worker.model = mock_model
+    return worker
 
 
 # ---------------------------------------------------------------------------
@@ -91,109 +62,78 @@ def mock_pil_image():
 class TestRenderSpan:
     """render() must emit an OTEL span with tier, seed, dimensions, elapsed_ms."""
 
-    def test_render_creates_span(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
-        """render() must create a span named 'flux_mlx.render'."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+    def test_render_creates_span(self, tmp_path, otel_exporter):
+        """render() must create a span named 'zimage_mlx.render'."""
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.render({"tier": "scene_illustration", "positive_prompt": "test", "seed": 42})
 
         spans = otel_exporter.get_finished_spans()
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
-        assert len(render_spans) >= 1, f"Expected 'flux_mlx.render' span, got: {[s.name for s in spans]}"
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
+        assert len(render_spans) >= 1, f"Expected 'zimage_mlx.render' span, got: {[s.name for s in spans]}"
 
-    def test_render_span_has_tier(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
+    def test_render_span_has_tier(self, tmp_path, otel_exporter):
         """render span must include tier attribute."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.render({"tier": "portrait", "positive_prompt": "wizard", "seed": 1})
 
         spans = otel_exporter.get_finished_spans()
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         assert len(render_spans) >= 1
         attrs = dict(render_spans[-1].attributes)
         assert attrs.get("render.tier") == "portrait"
 
-    def test_render_span_has_seed(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
+    def test_render_span_has_seed(self, tmp_path, otel_exporter):
         """render span must include seed attribute."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.render({"tier": "landscape", "positive_prompt": "hills", "seed": 999})
 
         spans = otel_exporter.get_finished_spans()
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
         assert attrs.get("render.seed") == 999
 
-    def test_render_span_has_dimensions(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
+    def test_render_span_has_dimensions(self, tmp_path, otel_exporter):
         """render span must include width and height."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.render({"tier": "cartography", "positive_prompt": "map", "seed": 0})
 
         spans = otel_exporter.get_finished_spans()
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
         assert attrs.get("render.width") == 1024
         assert attrs.get("render.height") == 1024
 
-    def test_render_span_has_elapsed_ms(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
+    def test_render_span_has_elapsed_ms(self, tmp_path, otel_exporter):
         """render span must include elapsed_ms attribute."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.render({"tier": "scene_illustration", "positive_prompt": "forest", "seed": 7})
 
         spans = otel_exporter.get_finished_spans()
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
         assert "render.elapsed_ms" in attrs
         assert isinstance(attrs["render.elapsed_ms"], int)
 
-    def test_render_span_has_variant(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
-        """render span must include the model variant used."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
+    def test_render_span_has_steps(self, tmp_path, otel_exporter):
+        """render span must include the step count for the tier."""
+        worker = _make_worker_with_mock_model(tmp_path)
+        worker.render({"tier": "cartography", "positive_prompt": "map", "seed": 0})
 
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
+        spans = otel_exporter.get_finished_spans()
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
+        attrs = dict(render_spans[-1].attributes)
+        # cartography uses 20 steps per TIER_CONFIGS
+        assert attrs.get("render.steps") == 20
 
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+    def test_render_span_has_guidance(self, tmp_path, otel_exporter):
+        """render span must include guidance scale for the tier."""
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.render({"tier": "text_overlay", "positive_prompt": "title", "seed": 0})
 
         spans = otel_exporter.get_finished_spans()
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
-        assert attrs.get("render.variant") == "dev"
+        assert attrs.get("render.guidance") == pytest.approx(4.5)
 
 
 # ---------------------------------------------------------------------------
@@ -201,28 +141,70 @@ class TestRenderSpan:
 # ---------------------------------------------------------------------------
 
 class TestLoadModelSpan:
-    """load_model() must emit an OTEL span with variant attribute."""
+    """load_model() must emit an OTEL span with model.name attribute."""
 
-    def test_load_model_creates_span(self, tmp_path, mock_mflux, otel_exporter):
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
+    def test_load_model_creates_span(self, tmp_path, otel_exporter, monkeypatch):
+        from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
 
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+        # Stub out the mflux imports inside load_model by pre-setting self.model
+        # and monkeypatching the import machinery via a fake module path is fragile;
+        # instead, make load_model short-circuit by patching ZImage construction.
+        worker = ZImageMLXWorker(tmp_path)
+
+        # Patch the mflux imports to avoid loading the real model.
+        import sys
+        import types
+
+        fake_mflux = types.ModuleType("mflux")
+        fake_common = types.ModuleType("mflux.models.common")
+        fake_common_config = types.ModuleType("mflux.models.common.config")
+        fake_common_config.ModelConfig = MagicMock()
+        fake_zimage_pkg = types.ModuleType("mflux.models.z_image")
+        fake_zimage_variants = types.ModuleType("mflux.models.z_image.variants")
+        fake_zimage_mod = types.ModuleType("mflux.models.z_image.variants.z_image")
+        fake_zimage_mod.ZImage = MagicMock(return_value=MagicMock(name="ZImageInstance"))
+
+        monkeypatch.setitem(sys.modules, "mflux", fake_mflux)
+        monkeypatch.setitem(sys.modules, "mflux.models", types.ModuleType("mflux.models"))
+        monkeypatch.setitem(sys.modules, "mflux.models.common", fake_common)
+        monkeypatch.setitem(sys.modules, "mflux.models.common.config", fake_common_config)
+        monkeypatch.setitem(sys.modules, "mflux.models.z_image", fake_zimage_pkg)
+        monkeypatch.setitem(sys.modules, "mflux.models.z_image.variants", fake_zimage_variants)
+        monkeypatch.setitem(sys.modules, "mflux.models.z_image.variants.z_image", fake_zimage_mod)
+
+        worker.load_model()
 
         spans = otel_exporter.get_finished_spans()
-        load_spans = [s for s in spans if s.name == "flux_mlx.load_model"]
-        assert len(load_spans) >= 1, f"Expected 'flux_mlx.load_model' span, got: {[s.name for s in spans]}"
+        load_spans = [s for s in spans if s.name == "zimage_mlx.load_model"]
+        assert len(load_spans) >= 1, f"Expected 'zimage_mlx.load_model' span, got: {[s.name for s in spans]}"
 
-    def test_load_model_span_has_variant(self, tmp_path, mock_mflux, otel_exporter):
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
+    def test_load_model_span_has_model_name(self, tmp_path, otel_exporter, monkeypatch):
+        from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
 
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("schnell")
+        worker = ZImageMLXWorker(tmp_path)
+
+        import sys
+        import types
+
+        fake_common_config = types.ModuleType("mflux.models.common.config")
+        fake_common_config.ModelConfig = MagicMock()
+        fake_zimage_mod = types.ModuleType("mflux.models.z_image.variants.z_image")
+        fake_zimage_mod.ZImage = MagicMock(return_value=MagicMock(name="ZImageInstance"))
+
+        monkeypatch.setitem(sys.modules, "mflux", types.ModuleType("mflux"))
+        monkeypatch.setitem(sys.modules, "mflux.models", types.ModuleType("mflux.models"))
+        monkeypatch.setitem(sys.modules, "mflux.models.common", types.ModuleType("mflux.models.common"))
+        monkeypatch.setitem(sys.modules, "mflux.models.common.config", fake_common_config)
+        monkeypatch.setitem(sys.modules, "mflux.models.z_image", types.ModuleType("mflux.models.z_image"))
+        monkeypatch.setitem(sys.modules, "mflux.models.z_image.variants", types.ModuleType("mflux.models.z_image.variants"))
+        monkeypatch.setitem(sys.modules, "mflux.models.z_image.variants.z_image", fake_zimage_mod)
+
+        worker.load_model()
 
         spans = otel_exporter.get_finished_spans()
-        load_spans = [s for s in spans if s.name == "flux_mlx.load_model"]
+        load_spans = [s for s in spans if s.name == "zimage_mlx.load_model"]
         attrs = dict(load_spans[-1].attributes)
-        assert attrs.get("model.variant") == "schnell"
+        assert attrs.get("model.name") == "z-image"
 
 
 # ---------------------------------------------------------------------------
@@ -230,36 +212,22 @@ class TestLoadModelSpan:
 # ---------------------------------------------------------------------------
 
 class TestWarmUpSpan:
-    """warm_up() must emit an OTEL span with warmup_ms attribute."""
+    """warm_up() must emit an OTEL span with warmup.elapsed_ms attribute."""
 
-    def test_warm_up_creates_span(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+    def test_warm_up_creates_span(self, tmp_path, otel_exporter):
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.warm_up()
 
         spans = otel_exporter.get_finished_spans()
-        warmup_spans = [s for s in spans if s.name == "flux_mlx.warm_up"]
-        assert len(warmup_spans) >= 1, f"Expected 'flux_mlx.warm_up' span, got: {[s.name for s in spans]}"
+        warmup_spans = [s for s in spans if s.name == "zimage_mlx.warm_up"]
+        assert len(warmup_spans) >= 1, f"Expected 'zimage_mlx.warm_up' span, got: {[s.name for s in spans]}"
 
-    def test_warm_up_span_has_elapsed(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+    def test_warm_up_span_has_elapsed(self, tmp_path, otel_exporter):
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.warm_up()
 
         spans = otel_exporter.get_finished_spans()
-        warmup_spans = [s for s in spans if s.name == "flux_mlx.warm_up"]
+        warmup_spans = [s for s in spans if s.name == "zimage_mlx.warm_up"]
         attrs = dict(warmup_spans[-1].attributes)
         assert "warmup.elapsed_ms" in attrs
 
@@ -313,18 +281,15 @@ class TestGpuDetectSpan:
 class TestErrorSpans:
     """Render failures must record exception on the span."""
 
-    def test_render_error_records_exception(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
+    def test_render_error_records_exception(self, tmp_path, otel_exporter):
         """ValueError from unsupported tier should be recorded on the span."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        worker = FluxMLXWorker(tmp_path)
+        worker = _make_worker_with_mock_model(tmp_path)
 
         with pytest.raises(ValueError):
             worker.render({"tier": "bogus", "positive_prompt": "test"})
 
         spans = otel_exporter.get_finished_spans()
-        # Should have a render span with error status
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         assert len(render_spans) >= 1, f"Expected error span, got: {[s.name for s in spans]}"
         error_span = render_spans[-1]
         assert error_span.status.is_ok is False, "Error span should have non-OK status"
@@ -337,20 +302,13 @@ class TestErrorSpans:
 class TestTracerName:
     """Spans must use a tracer named for the daemon media module."""
 
-    def test_tracer_name(self, tmp_path, mock_mflux, mock_pil_image, otel_exporter):
+    def test_tracer_name(self, tmp_path, otel_exporter):
         """Tracer instrumentation scope must identify the daemon media module."""
-        from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
-
-        mock_instance = MagicMock()
-        mock_instance.generate.return_value = mock_pil_image
-        mock_mflux.from_name.return_value = mock_instance
-
-        worker = FluxMLXWorker(tmp_path)
-        worker.load_model("dev")
+        worker = _make_worker_with_mock_model(tmp_path)
         worker.render({"tier": "scene_illustration", "positive_prompt": "test", "seed": 0})
 
         spans = otel_exporter.get_finished_spans()
-        render_spans = [s for s in spans if s.name == "flux_mlx.render"]
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         assert len(render_spans) >= 1
         scope = render_spans[-1].instrumentation_scope
         assert "sidequest_daemon" in scope.name, (
