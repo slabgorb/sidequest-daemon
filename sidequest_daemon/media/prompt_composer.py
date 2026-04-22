@@ -37,9 +37,6 @@ _DEFAULT_LOCATION_TAGS: dict[str, str] = {
 # Negatives always included regardless of genre.
 _BASE_NEGATIVES = "watermark, signature, text, blurry, deformed, extra limbs, modern clothing, contemporary, t-shirt, collared shirt, photograph, photorealistic, hyperrealistic, smooth skin, airbrushed, polished surface, CGI"
 
-# Tiers that force the Flux worker (text rendering / cartography).
-_FLUX_FORCED_TIERS = {RenderTier.TEXT_OVERLAY, RenderTier.CARTOGRAPHY, RenderTier.TACTICAL_SKETCH}
-
 # T5-XXL token limit — Flux uses T5-XXL which supports 512 tokens
 # and understands rich literary vocabulary natively.
 _TOKEN_LIMIT = 512
@@ -261,8 +258,6 @@ class PromptComposer:
         return ", ".join(parts)
 
     def _select_worker(self, cue: StageCue, style: VisualStyle) -> str:
-        if cue.tier in _FLUX_FORCED_TIERS:
-            return "flux"
         return style.preferred_model
 
     def _derive_seed(self, cue: StageCue, style: VisualStyle) -> int:

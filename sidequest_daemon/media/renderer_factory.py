@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from sidequest_daemon.media.daemon import SOCKET_PATH
 from sidequest_daemon.media.gpu_detect import detect_gpu
 from sidequest_daemon.media.renderer import SubprocessRenderer
-from sidequest_daemon.media.flux_config import FLUX_SUPPORTED_TIERS
+from sidequest_daemon.media.zimage_config import ZIMAGE_SUPPORTED_TIERS
 from sidequest_daemon.media.worker import MediaWorker
 from sidequest_daemon.renderer.base import Renderer
 from sidequest_daemon.renderer.null import NullRenderer
@@ -34,7 +34,7 @@ async def _try_daemon(visual_style: "VisualStyle | None") -> Renderer | None:
         return SubprocessRenderer(
             worker=client,
             renderer_name="renderer-daemon",
-            supported_tiers=FLUX_SUPPORTED_TIERS,
+            supported_tiers=ZIMAGE_SUPPORTED_TIERS,
             visual_style=visual_style,
         )
     except Exception as exc:
@@ -63,8 +63,8 @@ async def create_renderer(
 
     try:
         worker = MediaWorker(
-            name="flux",
-            command=[sys.executable, "-m", "sidequest_daemon.media.workers.flux_mlx_worker"],
+            name="zimage",
+            command=[sys.executable, "-m", "sidequest_daemon.media.workers.zimage_mlx_worker"],
             workdir=Path.cwd(),
             default_timeout=900.0,
         )
@@ -72,8 +72,8 @@ async def create_renderer(
 
         return SubprocessRenderer(
             worker=worker,
-            renderer_name="flux",
-            supported_tiers=FLUX_SUPPORTED_TIERS,
+            renderer_name="zimage",
+            supported_tiers=ZIMAGE_SUPPORTED_TIERS,
             visual_style=visual_style,
         )
     except Exception as exc:

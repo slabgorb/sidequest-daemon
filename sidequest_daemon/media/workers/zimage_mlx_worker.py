@@ -1,0 +1,285 @@
+"""Z-Image image generation worker — Apple Silicon native via mflux.
+
+Replaces FluxMLXWorker. Same interface contract: load_model(), warm_up(),
+render(), cleanup(). Communicates via JSON-line protocol over stdin/stdout
+when run as subprocess. No LoRA support.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import sys
+import time
+import uuid
+from pathlib import Path
+
+from opentelemetry import trace
+
+log = logging.getLogger(__name__)
+
+
+class ZImageMLXWorker:
+    """Z-Image Base 1.0 image generation worker using Apple MLX via mflux."""
+
+    # Tier config — KEEP IN SYNC with zimage_config.py and daemon.py IMAGE_TIERS.
+    TIER_CONFIGS = {
+        "scene_illustration": {"steps": 12, "guidance": 4.5, "w": 1024, "h": 768},
+        "portrait":           {"steps": 12, "guidance": 4.5, "w": 768,  "h": 1024},
+        "portrait_square":    {"steps": 12, "guidance": 4.5, "w": 1024, "h": 1024},
+        "landscape":          {"steps": 12, "guidance": 4.5, "w": 1024, "h": 768},
+        "text_overlay":       {"steps": 12, "guidance": 4.5, "w": 768,  "h": 512},
+        "cartography":        {"steps": 20, "guidance": 4.5, "w": 1024, "h": 1024},
+        "tactical_sketch":    {"steps": 12, "guidance": 4.5, "w": 1024, "h": 1024},
+        "fog_of_war":         {"steps": 12, "guidance": 4.5, "w": 1024, "h": 1024},
+    }
+
+    # Quantization level for model loading. None = full precision.
+    QUANTIZE: int | None = None
+
+    # Z-Image's default scheduler per its CLI.
+    SCHEDULER: str = "flow_match_euler_discrete"
+
+    def __init__(self, output_dir: Path) -> None:
+        self.output_dir = Path(output_dir)
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.model: object | None = None
+
+    def load_model(self) -> None:
+        """Load Z-Image Base 1.0 via mflux."""
+        tracer = trace.get_tracer(
+            "sidequest_daemon.media.workers.zimage_mlx_worker"
+        )
+        with tracer.start_as_current_span("zimage_mlx.load_model") as span:
+            span.set_attribute("model.name", "z-image")
+            span.set_attribute("model.quantize", self.QUANTIZE or 0)
+            from mflux.models.common.config import ModelConfig
+            from mflux.models.z_image.variants.z_image import ZImage
+
+            self.model = ZImage(
+                model_config=ModelConfig.from_name("z-image"),
+                quantize=self.QUANTIZE,
+            )
+
+    def _ensure_loaded(self) -> None:
+        if self.model is None:
+            self.load_model()
+
+    def warm_up(self) -> dict:
+        """MLX graph compilation via dummy generation."""
+        self._ensure_loaded()
+        tracer = trace.get_tracer(
+            "sidequest_daemon.media.workers.zimage_mlx_worker"
+        )
+        with tracer.start_as_current_span("zimage_mlx.warm_up") as span:
+            start = time.monotonic()
+            assert self.model is not None
+            self.model.generate_image(  # type: ignore[attr-defined]
+                seed=0,
+                prompt="black",
+                num_inference_steps=1,
+                guidance=0.0,
+                width=512,
+                height=512,
+                scheduler=self.SCHEDULER,
+                negative_prompt=None,
+            )
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            span.set_attribute("warmup.elapsed_ms", elapsed_ms)
+            return {"warmup_ms": elapsed_ms}
+
+    def render(self, params: dict) -> dict:
+        """Generate image from StageCue params. Returns result dict."""
+        tracer = trace.get_tracer(
+            "sidequest_daemon.media.workers.zimage_mlx_worker"
+        )
+        with tracer.start_as_current_span("zimage_mlx.render") as span:
+            try:
+                tier_name = params.get("tier", "")
+                if tier_name not in self.TIER_CONFIGS:
+                    raise ValueError(f"Unsupported tier: {tier_name!r}")
+
+                # LoRA support is removed. Reject callers that still send it.
+                if any(
+                    k in params
+                    for k in ("lora_paths", "lora_scales", "lora_path", "lora_scale")
+                ):
+                    raise ValueError(
+                        "LoRA support has been removed from the renderer. "
+                        "Remove lora_paths/lora_scales from render params."
+                    )
+
+                tier_cfg = self.TIER_CONFIGS[tier_name]
+                prompt = self._compose_prompt(params)
+                negative_prompt = params.get("negative_prompt") or None
+                seed = params.get("seed", 0)
+
+                span.set_attribute("render.tier", tier_name)
+                span.set_attribute("render.seed", seed)
+                span.set_attribute("render.width", tier_cfg["w"])
+                span.set_attribute("render.height", tier_cfg["h"])
+                span.set_attribute("render.steps", tier_cfg["steps"])
+                span.set_attribute("render.guidance", tier_cfg["guidance"])
+                span.set_attribute("render.prompt_length", len(prompt))
+                span.set_attribute(
+                    "render.negative_length", len(negative_prompt or "")
+                )
+
+                log.info(
+                    "ZIMAGE RENDER [%s] seed=%s w=%s h=%s steps=%s",
+                    tier_name, seed, tier_cfg["w"], tier_cfg["h"], tier_cfg["steps"],
+                )
+                log.info("  prompt: %s", prompt[:150])
+
+                self._ensure_loaded()
+                assert self.model is not None
+
+                start = time.monotonic()
+                image = self.model.generate_image(  # type: ignore[attr-defined]
+                    seed=seed,
+                    prompt=prompt,
+                    num_inference_steps=tier_cfg["steps"],
+                    guidance=tier_cfg["guidance"],
+                    width=tier_cfg["w"],
+                    height=tier_cfg["h"],
+                    scheduler=self.SCHEDULER,
+                    negative_prompt=negative_prompt,
+                )
+                elapsed_ms = int((time.monotonic() - start) * 1000)
+                span.set_attribute("render.elapsed_ms", elapsed_ms)
+
+                filename = f"render_{uuid.uuid4().hex[:8]}.png"
+                image_path = self.output_dir / filename
+                image.save(str(image_path))
+
+                return {
+                    "image_url": str(image_path),
+                    "width": tier_cfg["w"],
+                    "height": tier_cfg["h"],
+                    "elapsed_ms": elapsed_ms,
+                }
+            except Exception as exc:
+                span.set_status(trace.StatusCode.ERROR, str(exc))
+                span.record_exception(exc)
+                raise
+
+    def _compose_prompt(self, params: dict) -> str:
+        """Build positive prompt for Z-Image.
+
+        If SubprocessRenderer already composed a prompt (with genre style
+        suffix and location tag overrides), use it directly. Otherwise
+        fall back to building from raw StageCue fields (used by batch
+        scripts like generate_portraits.py).
+        """
+        if params.get("positive_prompt"):
+            return params["positive_prompt"]
+        if params.get("prompt"):
+            return params["prompt"]
+
+        tier = params.get("tier", "")
+        is_text_overlay = tier == "text_overlay"
+
+        parts: list[str] = []
+        if params.get("subject"):
+            subject = params["subject"]
+            if is_text_overlay:
+                subject = f"text reading {subject}"
+            parts.append(subject)
+        if params.get("mood"):
+            parts.append(f"{params['mood']} atmosphere")
+        if params.get("location"):
+            parts.append(f"set in {params['location']}")
+        if params.get("tags"):
+            parts.extend(params["tags"])
+
+        if is_text_overlay:
+            parts.extend(["clean typography", "readable text", "sharp lettering"])
+
+        if not parts:
+            raise ValueError(
+                "No prompt content: params has no positive_prompt, prompt, "
+                f"subject, or tags. Params: {params}"
+            )
+
+        return ", ".join(parts)
+
+    def cleanup(self) -> None:
+        """Unload model, free GPU memory."""
+        self.model = None
+
+
+def _respond(
+    req_id: str, *, result: dict | None = None, error: dict | None = None
+) -> None:
+    """Write a JSON response line to stdout."""
+    resp: dict = {"id": req_id}
+    if result is not None:
+        resp["result"] = result
+    if error is not None:
+        resp["error"] = error
+    print(json.dumps(resp), flush=True)
+
+
+def main() -> None:
+    """JSON-line protocol loop."""
+    import tempfile
+
+    output_dir = Path(tempfile.mkdtemp(prefix="sq-zimage-mlx-"))
+    worker = ZImageMLXWorker(output_dir)
+
+    worker.load_model()
+    worker.warm_up()
+
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+
+        try:
+            req = json.loads(line)
+            req_id = req.get("id", "unknown")
+            method = req.get("method")
+            if not method:
+                _respond(
+                    req_id,
+                    error={"code": "INVALID_REQUEST", "message": "Missing 'method'"},
+                )
+                continue
+        except json.JSONDecodeError as e:
+            _respond("unknown", error={"code": "PARSE_ERROR", "message": str(e)})
+            continue
+        params = req.get("params", {})
+
+        if method == "ping":
+            _respond(req_id, result={"status": "ok"})
+        elif method == "shutdown":
+            _respond(req_id, result={"status": "ok"})
+            worker.cleanup()
+            break
+        elif method == "render":
+            try:
+                render_result = worker.render(params)
+                _respond(req_id, result=render_result)
+            except Exception as e:
+                _respond(
+                    req_id,
+                    error={"code": "GENERATION_FAILED", "message": str(e)},
+                )
+        elif method == "warm_up":
+            try:
+                warm_result = worker.warm_up()
+                _respond(req_id, result=warm_result)
+            except Exception as e:
+                _respond(
+                    req_id,
+                    error={"code": "WARMUP_FAILED", "message": str(e)},
+                )
+        else:
+            _respond(
+                req_id,
+                error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"},
+            )
+
+
+if __name__ == "__main__":
+    main()
