@@ -20,6 +20,7 @@ class RenderTier(str, Enum):
     TACTICAL_SKETCH = "tactical_sketch"
     SCENE_ILLUSTRATION = "scene_illustration"
     PORTRAIT = "portrait"
+    PORTRAIT_SQUARE = "portrait_square"
     LANDSCAPE = "landscape"
     TEXT_OVERLAY = "text_overlay"
     CARTOGRAPHY = "cartography"

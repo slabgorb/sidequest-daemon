@@ -26,6 +26,7 @@ class ZImageMLXWorker:
     TIER_CONFIGS = {
         "scene_illustration": {"steps": 12, "guidance": 4.5, "w": 1024, "h": 768},
         "portrait":           {"steps": 12, "guidance": 4.5, "w": 768,  "h": 1024},
+        "portrait_square":    {"steps": 12, "guidance": 4.5, "w": 1024, "h": 1024},
         "landscape":          {"steps": 12, "guidance": 4.5, "w": 1024, "h": 768},
         "text_overlay":       {"steps": 12, "guidance": 4.5, "w": 768,  "h": 512},
         "cartography":        {"steps": 20, "guidance": 4.5, "w": 1024, "h": 1024},

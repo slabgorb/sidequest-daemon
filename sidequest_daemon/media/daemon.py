@@ -40,7 +40,7 @@ tracer = trace.get_tracer("sidequest_daemon.media.daemon")
 log = logging.getLogger(__name__)
 
 # Tier → worker routing.
-IMAGE_TIERS = frozenset({"scene_illustration", "portrait", "landscape", "cartography", "text_overlay", "tactical_sketch", "fog_of_war"})
+IMAGE_TIERS = frozenset({"scene_illustration", "portrait", "portrait_square", "landscape", "cartography", "text_overlay", "tactical_sketch", "fog_of_war"})
 EMBED_TIERS = frozenset({"embed"})
 
 

@@ -31,6 +31,9 @@ ZIMAGE_TIER_CONFIGS: dict[RenderTier, ZImageTierConfig] = {
     RenderTier.PORTRAIT: ZImageTierConfig(
         steps=12, guidance=4.5, width=768, height=1024,
     ),
+    RenderTier.PORTRAIT_SQUARE: ZImageTierConfig(
+        steps=12, guidance=4.5, width=1024, height=1024,
+    ),
     RenderTier.LANDSCAPE: ZImageTierConfig(
         steps=12, guidance=4.5, width=1024, height=768,
     ),
