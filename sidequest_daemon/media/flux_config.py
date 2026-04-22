@@ -37,6 +37,13 @@ FLUX_TIER_CONFIGS: dict[RenderTier, FluxTierConfig] = {
         width=768,
         height=1024,
     ),
+    RenderTier.PORTRAIT_SQUARE: FluxTierConfig(
+        model_variant="dev",
+        steps=12,
+        guidance_scale=3.5,
+        width=1024,
+        height=1024,
+    ),
     RenderTier.LANDSCAPE: FluxTierConfig(
         model_variant="dev",
         steps=12,
