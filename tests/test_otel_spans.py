@@ -133,7 +133,7 @@ class TestRenderSpan:
         spans = otel_exporter.get_finished_spans()
         render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
-        assert attrs.get("render.guidance") == pytest.approx(4.5)
+        assert attrs.get("render.guidance") == pytest.approx(4.0)
 
 
 # ---------------------------------------------------------------------------

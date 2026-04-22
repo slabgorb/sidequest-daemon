@@ -24,20 +24,40 @@ class ZImageMLXWorker:
 
     # Tier config — KEEP IN SYNC with zimage_config.py and daemon.py IMAGE_TIERS.
     TIER_CONFIGS = {
-        "scene_illustration": {"steps": 12, "guidance": 4.5, "w": 1024, "h": 768},
-        "portrait":           {"steps": 12, "guidance": 4.5, "w": 768,  "h": 1024},
-        "portrait_square":    {"steps": 12, "guidance": 4.5, "w": 1024, "h": 1024},
-        "landscape":          {"steps": 12, "guidance": 4.5, "w": 1024, "h": 768},
-        "text_overlay":       {"steps": 12, "guidance": 4.5, "w": 768,  "h": 512},
-        "cartography":        {"steps": 20, "guidance": 4.5, "w": 1024, "h": 1024},
-        "tactical_sketch":    {"steps": 12, "guidance": 4.5, "w": 1024, "h": 1024},
-        "fog_of_war":         {"steps": 12, "guidance": 4.5, "w": 1024, "h": 1024},
+        "scene_illustration": {"steps": 20, "guidance": 4.0, "w": 1024, "h": 768},
+        "portrait":           {"steps": 20, "guidance": 4.0, "w": 768,  "h": 1024},
+        "portrait_square":    {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
+        "landscape":          {"steps": 20, "guidance": 4.0, "w": 1024, "h": 768},
+        "text_overlay":       {"steps": 20, "guidance": 4.0, "w": 768,  "h": 512},
+        "cartography":        {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
+        "tactical_sketch":    {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
+        "fog_of_war":         {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
     }
 
     # Quantization level for model loading. None = full precision.
     QUANTIZE: int | None = None
 
     # Z-Image's default scheduler per its CLI.
+    #
+    # Draw Things delta: Draw Things validation used "UniPC Trailing", which
+    # empirically produces slightly cleaner detail at 20 steps / CFG 4.0.
+    # mflux 0.x does NOT ship UniPC — the only options in
+    # mflux/models/common/schedulers/ are:
+    #   - linear
+    #   - flow_match_euler_discrete  (this one; used for Z-Image with CFG>1)
+    #   - seedvr2_euler              (SeedVR2-specific)
+    # If/when mflux adds UniPC this is the line to change. For now the daemon
+    # is NOT a pixel-perfect match to Draw Things on sampler, only on
+    # steps/guidance/resolution-dependent-shift.
+    #
+    # Resolution-dependent shift ("Resolution Dpt. Shift" in Draw Things) IS
+    # enabled automatically: mflux's ModelConfig for "z-image" and
+    # "z-image-turbo" both set requires_sigma_shift=True, which causes
+    # Config.scheduler to call FlowMatchEulerDiscreteScheduler.set_image_seq_len
+    # at construction time — i.e. the sigma schedule is recomputed per call
+    # based on (width/16) * (height/16). No extra flag needed here.
+    #
+    # CFG Zero*: no such toggle exists in mflux. Nothing to disable.
     SCHEDULER: str = "flow_match_euler_discrete"
 
     def __init__(self, output_dir: Path) -> None:

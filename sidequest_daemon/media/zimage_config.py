@@ -23,28 +23,28 @@ class ZImageTierConfig:
 
 ZIMAGE_TIER_CONFIGS: dict[RenderTier, ZImageTierConfig] = {
     RenderTier.TACTICAL_SKETCH: ZImageTierConfig(
-        steps=12, guidance=4.5, width=1024, height=1024,
+        steps=20, guidance=4.0, width=1024, height=1024,
     ),
     RenderTier.SCENE_ILLUSTRATION: ZImageTierConfig(
-        steps=12, guidance=4.5, width=1024, height=768,
+        steps=20, guidance=4.0, width=1024, height=768,
     ),
     RenderTier.PORTRAIT: ZImageTierConfig(
-        steps=12, guidance=4.5, width=768, height=1024,
+        steps=20, guidance=4.0, width=768, height=1024,
     ),
     RenderTier.PORTRAIT_SQUARE: ZImageTierConfig(
-        steps=12, guidance=4.5, width=1024, height=1024,
+        steps=20, guidance=4.0, width=1024, height=1024,
     ),
     RenderTier.LANDSCAPE: ZImageTierConfig(
-        steps=12, guidance=4.5, width=1024, height=768,
+        steps=20, guidance=4.0, width=1024, height=768,
     ),
     RenderTier.TEXT_OVERLAY: ZImageTierConfig(
-        steps=12, guidance=4.5, width=768, height=512,
+        steps=20, guidance=4.0, width=768, height=512,
     ),
     RenderTier.CARTOGRAPHY: ZImageTierConfig(
-        steps=20, guidance=4.5, width=1024, height=1024,
+        steps=20, guidance=4.0, width=1024, height=1024,
     ),
     RenderTier.FOG_OF_WAR: ZImageTierConfig(
-        steps=12, guidance=4.5, width=1024, height=1024,
+        steps=20, guidance=4.0, width=1024, height=1024,
     ),
 }
 
