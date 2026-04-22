@@ -136,6 +136,13 @@ class FluxMLXWorker:
             "w": 768,
             "h": 1024,
         },
+        "portrait_square": {
+            "model": "dev",
+            "steps": 12,
+            "guidance": 3.5,
+            "w": 1024,
+            "h": 1024,
+        },
         "landscape": {
             "model": "dev",
             "steps": 12,

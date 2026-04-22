@@ -121,6 +121,7 @@ class TestTierConfigs:
     EXPECTED_TIERS = {
         "scene_illustration",
         "portrait",
+        "portrait_square",
         "landscape",
         "text_overlay",
         "cartography",
@@ -132,7 +133,7 @@ class TestTierConfigs:
         assert set(FluxMLXWorker.TIER_CONFIGS.keys()) == self.EXPECTED_TIERS
 
     @pytest.mark.parametrize("tier", [
-        "scene_illustration", "portrait", "landscape",
+        "scene_illustration", "portrait", "portrait_square", "landscape",
         "text_overlay", "cartography", "tactical_sketch",
     ])
     def test_tier_has_required_keys(self, tier, mock_mflux):

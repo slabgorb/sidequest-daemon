@@ -18,6 +18,7 @@ _TIER_PROMPT_PREFIX: dict[RenderTier, str] = {
     RenderTier.TACTICAL_SKETCH: "top-down tactical battle map, square grid overlay, each combatant marked with a bold letter initial inside a colored circle, clear spacing between tokens, clean flat illustration style, high contrast labels, bird's-eye view, no perspective",
     RenderTier.LANDSCAPE: "wide establishing shot, atmospheric",
     RenderTier.PORTRAIT: "character portrait, detailed face and attire, centered subject",
+    RenderTier.PORTRAIT_SQUARE: "character portrait, detailed face and attire, centered subject, square framing",
     RenderTier.SCENE_ILLUSTRATION: "detailed painterly illustration, hand-painted scene, dramatic composition",
 }
 
@@ -132,7 +133,7 @@ class PromptComposer:
 
         # For portrait renders, reinforce character distinctiveness.
         # Appended last so it's the first thing dropped under budget pressure.
-        if cue.tier == RenderTier.PORTRAIT:
+        if cue.tier in (RenderTier.PORTRAIT, RenderTier.PORTRAIT_SQUARE):
             narrative_parts.append(
                 "solo character, detailed distinctive features, unique appearance"
             )
@@ -182,7 +183,7 @@ class PromptComposer:
         # - PORTRAIT: tier + narrative + style (character subject leads)
         # - Other tiers: style + tier + narrative (genre atmosphere leads)
         final: list[str] = []
-        if cue.tier == RenderTier.PORTRAIT:
+        if cue.tier in (RenderTier.PORTRAIT, RenderTier.PORTRAIT_SQUARE):
             if tier_prefix:
                 final.append(tier_prefix)
             final.extend(kept)
