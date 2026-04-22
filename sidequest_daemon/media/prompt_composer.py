@@ -16,7 +16,7 @@ from sidequest_daemon.renderer.models import RenderTier, StageCue
 
 _TIER_PROMPT_PREFIX: dict[RenderTier, str] = {
     RenderTier.TACTICAL_SKETCH: "top-down tactical battle map, square grid overlay, each combatant marked with a bold letter initial inside a colored circle, clear spacing between tokens, clean flat illustration style, high contrast labels, bird's-eye view, no perspective",
-    RenderTier.LANDSCAPE: "wide establishing shot, scenic vista, atmospheric",
+    RenderTier.LANDSCAPE: "wide establishing shot, atmospheric",
     RenderTier.PORTRAIT: "character portrait, detailed face and attire, centered subject",
     RenderTier.SCENE_ILLUSTRATION: "detailed painterly illustration, hand-painted scene, dramatic composition",
 }
