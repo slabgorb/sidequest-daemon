@@ -1,12 +1,12 @@
-"""sidequest-renderer daemon — persistent Flux image renderer on Unix domain socket.
+"""sidequest-renderer daemon — persistent Z-Image renderer on Unix domain socket.
 
-Hosts the Flux image worker in a single process with the model pre-loaded.
+Hosts the Z-Image worker in a single process with the model pre-loaded.
 Serves render requests over a Unix domain socket, routing by tier.
 Stays warm between sessions.
 
 Usage:
-    sidequest-renderer                          # start daemon (loads Flux)
-    sidequest-renderer --warmup=flux            # start + load Flux only
+    sidequest-renderer                          # start daemon (loads Z-Image)
+    sidequest-renderer --warmup=flux            # start + load Z-Image only
     sidequest-renderer --no-warmup              # start without loading models (testing)
     sidequest-renderer --shutdown               # send shutdown to running daemon
     sidequest-renderer --status                 # check daemon status
@@ -40,7 +40,7 @@ tracer = trace.get_tracer("sidequest_daemon.media.daemon")
 log = logging.getLogger(__name__)
 
 # Tier → worker routing.
-FLUX_TIERS = frozenset({"scene_illustration", "portrait", "landscape", "cartography", "text_overlay", "tactical_sketch"})
+IMAGE_TIERS = frozenset({"scene_illustration", "portrait", "landscape", "cartography", "text_overlay", "tactical_sketch", "fog_of_war"})
 EMBED_TIERS = frozenset({"embed"})
 
 
@@ -79,7 +79,7 @@ class EmbedWorker:
 
 
 class WorkerPool:
-    """Manages the Flux image worker with lazy or eager loading."""
+    """Manages the Z-Image worker with lazy or eager loading."""
 
     def __init__(self, output_dir: Path) -> None:
         self.output_dir = output_dir
@@ -100,7 +100,7 @@ class WorkerPool:
         self.memory_manager = ModelMemoryManager()
 
     def warm_up_flux(self) -> dict:
-        """Load and warm up Flux worker — dev variant only.
+        """Load and warm up Z-Image worker — dev variant only.
 
         Schnell is no longer warmed up. Every genre pack's visual_style.yaml
         declares preferred_model: dev, so schnell was loaded into memory
@@ -111,11 +111,11 @@ class WorkerPool:
             return {"worker": "flux", "status": "already_warm", "warmup_ms": 0}
         from sidequest_daemon.media.workers.flux_mlx_worker import FluxMLXWorker
         self._flux = FluxMLXWorker(self.output_dir / "flux")
-        log.info("Loading Flux dev...")
+        log.info("Loading Z-Image dev...")
         self._flux.load_model("dev")
         result = self._flux.warm_up()
         self._flux_loaded = True
-        log.info("Flux warm — dev (%.1fs)", result.get("warmup_ms", 0) / 1000)
+        log.info("Z-Image warm — dev (%.1fs)", result.get("warmup_ms", 0) / 1000)
         return {"worker": "flux", "status": "warm", "variants": ["dev"], **result}
 
     def _ensure_flux(self) -> None:
@@ -172,7 +172,7 @@ class WorkerPool:
     def render(self, params: dict) -> dict:
         """Route render request to the appropriate worker by tier."""
         tier = params.get("tier", "")
-        if tier in FLUX_TIERS:
+        if tier in IMAGE_TIERS:
             self._ensure_flux()
             return self._flux.render(params)
         else:
@@ -184,7 +184,7 @@ class WorkerPool:
             "flux": "warm" if self._flux_loaded else "cold",
             "embed": "warm" if self._embed_loaded else "cold",
             "supported_tiers": {
-                "flux": sorted(FLUX_TIERS),
+                "flux": sorted(IMAGE_TIERS),
                 "embed": sorted(EMBED_TIERS),
             },
         }
@@ -337,7 +337,7 @@ async def _handle_client(
                         extracted_tier = extracted.get("tier", "")
                         if extracted_tier:
                             tier_lower = extracted_tier.lower()
-                            if tier_lower in FLUX_TIERS:
+                            if tier_lower in IMAGE_TIERS:
                                 params["tier"] = tier_lower
                         log.info(
                             "narration_extracted — subject=%s, mood=%s, tier=%s",
@@ -536,7 +536,7 @@ async def _run_daemon(
     if warmup:
         target = warmup if isinstance(warmup, str) else "all"
         if target in ("all", "flux"):
-            log.info("Pre-loading Flux model...")
+            log.info("Pre-loading Z-Image model...")
             await asyncio.to_thread(pool.warm_up_flux)
         if target in ("all", "embed"):
             log.info("Pre-loading SentenceTransformer embed model...")
@@ -623,9 +623,9 @@ async def send_status() -> None:
         resp = json.loads(line.decode())
         if "result" in resp:
             status = resp["result"]
-            print(f"Flux: {status.get('flux', 'unknown')}")
+            print(f"Z-Image: {status.get('flux', 'unknown')}")
             tiers = status.get("supported_tiers", {})
-            print(f"Flux tiers: {', '.join(tiers.get('flux', []))}")
+            print(f"Z-Image tiers: {', '.join(tiers.get('flux', []))}")
         else:
             print(f"Error: {resp.get('error', resp)}")
         writer.close()

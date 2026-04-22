@@ -120,7 +120,7 @@ def _count_matched_keys_for_file(path: str, patterns: list[str]) -> int:
 class FluxMLXWorker:
     """Flux image generation worker using Apple MLX via mflux."""
 
-    # Tier config — KEEP IN SYNC with flux_config.py and daemon.py FLUX_TIERS.
+    # Tier config — KEEP IN SYNC with flux_config.py and daemon.py IMAGE_TIERS.
     TIER_CONFIGS = {
         "scene_illustration": {
             "model": "dev",
