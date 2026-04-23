@@ -97,7 +97,7 @@ class ZImageMLXWorker:
             self.model.generate_image(  # type: ignore[attr-defined]
                 seed=0,
                 prompt="black",
-                num_inference_steps=1,
+                num_inference_steps=2,
                 guidance=0.0,
                 width=512,
                 height=512,
