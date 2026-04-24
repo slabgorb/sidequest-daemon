@@ -10,7 +10,12 @@ from sidequest_daemon.media.catalogs import (
 )
 from sidequest_daemon.media.prompt_composer import PromptComposer
 from sidequest_daemon.media.recipe_loader import RecipeLoader
-from sidequest_daemon.media.recipes import CameraPreset, LOD, PlaceLOD, RenderTarget
+from sidequest_daemon.media.recipes import (
+    CameraPreset,
+    LOD,
+    PlaceLOD,
+    RenderTarget,
+)
 
 FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "visual_recipes" / "genre_packs"
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -115,3 +120,39 @@ def test_illustration_place_lod_backdrop(composer: PromptComposer) -> None:
         location="where:testworld/the_lookout", camera=CameraPreset.scene,
     )
     assert composer._place_lod_for(t) == PlaceLOD.BACKDROP
+
+
+def test_casting_portrait_uses_solo_description(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layers = composer._resolve_casting(t)
+    assert len(layers) == 1
+    assert layers[0].slot == "CASTING"
+    assert layers[0].source == "npc:rux"
+    assert "inquisitor" in layers[0].tokens
+    assert "grey wool cassock" in layers[0].tokens  # solo is richest
+
+
+def test_casting_illustration_two_uses_long(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux", "npc:mira"], action="arguing",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_casting(t)
+    assert len(layers) == 2
+    rux = next(layer for layer in layers if layer.source == "npc:rux")
+    assert rux.tokens.startswith("gaunt inquisitor in grey wool")
+
+
+def test_casting_poi_uses_landmark(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/the_lookout",
+    )
+    layers = composer._resolve_casting(t)
+    assert len(layers) == 1
+    assert layers[0].source == "where:testworld/the_lookout"
+    assert "watchtower" in layers[0].tokens

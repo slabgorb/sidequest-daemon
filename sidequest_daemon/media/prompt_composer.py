@@ -15,6 +15,7 @@ from sidequest_daemon.media.catalogs import (
 from sidequest_daemon.media.recipe_loader import RecipeLoader
 from sidequest_daemon.media.recipes import (
     ComposedPrompt,
+    LayerContribution,
     LOD,
     PlaceLOD,
     RenderTarget,
@@ -89,3 +90,36 @@ class PromptComposer:
         if target.kind == "portrait" and target.background:
             return PlaceLOD.BACKDROP
         return PlaceLOD.SOLO  # unreachable for current targets, safe default
+
+    def _resolve_casting(
+        self, target: RenderTarget
+    ) -> list[LayerContribution]:
+        if target.kind in ("portrait", "illustration"):
+            plan = self._character_lod_plan(target)
+            layers: list[LayerContribution] = []
+            for ref, lod in plan.items():
+                tokens = self._characters.get(ref)
+                text = tokens.descriptions[lod]
+                layers.append(
+                    LayerContribution(
+                        slot="CASTING",
+                        source=ref,
+                        tokens=text,
+                        estimated_tokens=_estimate_tokens(text),
+                    ),
+                )
+            return layers
+        if target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            lod = self._place_lod_for(target)
+            text = place.landmark[lod]
+            return [
+                LayerContribution(
+                    slot="CASTING",
+                    source=target.place,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        return []
