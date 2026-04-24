@@ -26,7 +26,7 @@ model warm between requests. The Rust backend sends render commands over
 
 **Flux Worker** — Image generation using Flux schnell and dev models. Six
 render tiers: `scene_illustration`, `portrait`, `landscape`, `text_overlay`,
-`cartography`, `tactical_sketch`. Current backend is the MLX worker
+`cartography` (`tactical_sketch` retired; see ADR-086). Current backend is the MLX worker
 (`workers/flux_mlx_worker.py`, per ADR-070), targeting Apple Silicon. Earlier
 PyTorch/diffusers code is retired.
 

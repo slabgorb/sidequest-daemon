@@ -1,7 +1,5 @@
-"""PromptComposer — genre pack style blocks, visual tags, negative prompts.
-
-Composes positive/negative image generation prompts by combining StageCue data
-with VisualStyle configuration from genre packs.
+"""Catalog-driven prompt composer. See spec:
+docs/superpowers/specs/2026-04-24-explicit-visual-recipes-design.md
 """
 
 from __future__ import annotations
@@ -9,264 +7,526 @@ from __future__ import annotations
 import hashlib
 import logging
 
-from pydantic import BaseModel
-
-from sidequest_daemon.genre.models import VisualStyle
-from sidequest_daemon.renderer.models import RenderTier, StageCue
-
-_TIER_PROMPT_PREFIX: dict[RenderTier, str] = {
-    RenderTier.TACTICAL_SKETCH: "top-down tactical battle map, square grid overlay, each combatant marked with a bold letter initial inside a colored circle, clear spacing between tokens, clean flat illustration style, high contrast labels, bird's-eye view, no perspective",
-    RenderTier.LANDSCAPE: "wide establishing shot, atmospheric",
-    RenderTier.PORTRAIT: "character portrait, detailed face and attire, centered subject",
-    RenderTier.PORTRAIT_SQUARE: "character portrait, detailed face and attire, centered subject, square framing",
-    RenderTier.SCENE_ILLUSTRATION: "detailed painterly illustration, hand-painted scene, dramatic composition",
-}
-
-# Default visual tags for common location keywords.
-_DEFAULT_LOCATION_TAGS: dict[str, str] = {
-    "tavern": "wooden beams, hearth fire, ale-stained tables, smoky interior",
-    "forest": "dense canopy, dappled sunlight, mossy undergrowth, ancient trees",
-    "dungeon": "stone corridors, flickering torches, damp walls, iron grates",
-    "castle": "stone battlements, tapestries, vaulted ceilings, heraldic banners",
-    "market": "merchant stalls, colorful awnings, crowded square, barrels and crates",
-    "cave": "stalactites, dim glow, rough stone, underground pools",
-    "temple": "stained glass, marble columns, incense smoke, sacred altars",
-    "battlefield": "scorched earth, broken weapons, banners in wind, smoke and dust",
-}
-
-# Negatives always included regardless of genre.
-_BASE_NEGATIVES = "watermark, signature, text, blurry, deformed, extra limbs, modern clothing, contemporary, t-shirt, collared shirt, photograph, photorealistic, hyperrealistic, smooth skin, airbrushed, polished surface, CGI"
-
-# T5-XXL token limit — Flux uses T5-XXL which supports 512 tokens
-# and understands rich literary vocabulary natively.
-_TOKEN_LIMIT = 512
-
-# Rough estimate for token budgeting without importing the actual tokenizer.
-_TOKENS_PER_WORD = 1.3
+from sidequest_daemon.media.camera_specs import CameraLoader
+from sidequest_daemon.media.catalogs import (
+    CharacterCatalog,
+    PlaceCatalog,
+    StyleCatalog,
+)
+from sidequest_daemon.media.recipe_loader import RecipeLoader
+from sidequest_daemon.media.recipes import (
+    BudgetError,
+    CameraPreset,
+    ComposedPrompt,
+    LayerContribution,
+    LOD,
+    PlaceLOD,
+    RenderTarget,
+)
 
 log = logging.getLogger(__name__)
 
+try:
+    from sidequest_daemon.telemetry import emit_watcher_event as _emit_watcher_event
+except ImportError:
+    # Stand-in when telemetry is not wired; the real module must exist in prod.
+    def _emit_watcher_event(name: str, payload: dict) -> None:
+        log.debug("otel (unwired): %s %s", name, payload)
+
+_TOKEN_LIMIT = 512
+_TOKENS_PER_WORD = 1.3
+_BASE_NEGATIVES = (
+    "watermark, signature, text, blurry, deformed, extra limbs, "
+    "photograph, photorealistic, hyperrealistic, smooth skin, CGI"
+)
+_HOUSE_SAFETY_CLAUSE = "solo character focus, detailed distinctive features"
+
 
 def _estimate_tokens(text: str) -> int:
-    """Estimate token count from whitespace-delimited word count."""
     if not text:
         return 0
     return max(1, int(len(text.split()) * _TOKENS_PER_WORD))
 
 
-def _truncate_to_tokens(text: str, max_tokens: int) -> str:
-    """Truncate text to approximately max_tokens tokens."""
-    words = text.split()
-    max_words = int(max_tokens / _TOKENS_PER_WORD)
-    if max_words <= 0:
-        return ""
-    return " ".join(words[:max_words])
-
-
-class ComposedPrompt(BaseModel):
-    """Output of prompt composition — everything a worker needs."""
-
-    positive_prompt: str
-    negative_prompt: str
-    clip_prompt: str
-    worker_type: str
-    seed: int
-
-
 class PromptComposer:
-    """Composes image-generation prompts from StageCue + VisualStyle."""
+    # Eviction order (most-evictable → least). Identity floor is below.
+    _EVICTION_ORDER: list[tuple[str, int]] = [
+        # (slot_label, preserve_token_count)
+        ("LOCATION.flourish", 8),
+        ("DIRECTION_ACTION.flourish", 8),
+        ("ART_SENSIBILITY.WORLD", 0),       # drop entirely
+        ("ART_SENSIBILITY.CULTURE.flourish", 12),
+    ]
 
-    # Minimum tokens reserved for narrative (subject, mood, etc.)
-    _MIN_NARRATIVE_TOKENS = 40
+    # Identity floor — never evict below these.
+    _IDENTITY_FLOOR: set[str] = {
+        "CASTING",
+        "DIRECTION_CAMERA",
+        "ART_SENSIBILITY.GENRE",
+    }
+
+    # LOD degradation ladder — ordered from richest to most minimal.
+    _LOD_ORDER = [LOD.SOLO, LOD.LONG, LOD.SHORT, LOD.BACKGROUND]
 
     def __init__(
         self,
-        visual_tag_overrides: dict[str, str] | None = None,
         *,
-        location_weight: float = 1.0,
-        subject_weight: float = 1.0,
+        recipes: RecipeLoader,
+        cameras: CameraLoader,
+        characters: CharacterCatalog,
+        places: PlaceCatalog,
+        styles: StyleCatalog,
     ) -> None:
-        self._tag_overrides = visual_tag_overrides or {}
-        self.weights = {
-            "location": max(0.0, min(1.0, location_weight)),
-            "subject": max(0.0, min(1.0, subject_weight)),
-        }
+        self._recipes = recipes
+        self._cameras = cameras
+        self._characters = characters
+        self._places = places
+        self._styles = styles
 
-    def compose(self, cue: StageCue, style: VisualStyle) -> ComposedPrompt:
-        positive = self._build_positive(cue, style)
-        clip = self._build_clip(cue, style)
-        negative = self._build_negative(cue, style)
-        worker = self._select_worker(cue, style)
-        seed = self._derive_seed(cue, style)
-        return ComposedPrompt(
-            positive_prompt=positive,
-            negative_prompt=negative,
-            clip_prompt=clip,
-            worker_type=worker,
-            seed=seed,
+    def compose(self, target: RenderTarget) -> ComposedPrompt:
+        plan = self._character_lod_plan(target)
+        layers = self._resolve_all_layers_with_plan(target, plan)
+        dropped: list[str] = []
+        warnings: list[str] = []
+
+        # 1. Participant LOD downgrade (preserves presence of every participant).
+        while sum(lay.estimated_tokens for lay in layers) > _TOKEN_LIMIT:
+            downgraded = self._downgrade_one_participant(plan)
+            if not downgraded:
+                break
+            layers = self._resolve_all_layers_with_plan(target, plan)
+
+        # 2. Slot-level eviction.
+        if sum(lay.estimated_tokens for lay in layers) > _TOKEN_LIMIT:
+            layers, dropped = self._apply_slot_eviction(layers)
+            warnings.append(
+                f"token budget eviction applied: "
+                f"{sum(lay.estimated_tokens for lay in layers)}/{_TOKEN_LIMIT}",
+            )
+
+        if sum(lay.estimated_tokens for lay in layers) > _TOKEN_LIMIT:
+            raise BudgetError(
+                "identity floor breached",
+                breakdown={lay.slot: lay.estimated_tokens for lay in layers},
+            )
+
+        positive = self._assemble(layers)
+        clip = self._build_clip(layers)
+        negative = self._build_negative(target)
+
+        _emit_watcher_event(
+            "render.prompt_composed",
+            {
+                "kind": target.kind,
+                "world": target.world,
+                "genre": target.genre,
+                "total_estimated_tokens": sum(
+                    layer.estimated_tokens for layer in layers
+                ),
+                "layers": [
+                    {
+                        "slot": layer.slot,
+                        "source": layer.source,
+                        "estimated_tokens": layer.estimated_tokens,
+                    }
+                    for layer in layers
+                ],
+                "dropped_layers": dropped,
+                "warnings": warnings,
+            },
         )
 
-    def _build_positive(self, cue: StageCue, style: VisualStyle) -> str:
-        tier_prefix = _TIER_PROMPT_PREFIX.get(cue.tier, "")
+        return ComposedPrompt(
+            positive_prompt=positive,
+            clip_prompt=clip,
+            negative_prompt=negative,
+            worker_type=self._select_worker(target),
+            seed=self._derive_seed(target),
+            layers=layers,
+            dropped_layers=dropped,
+            warnings=warnings,
+        )
 
-        # Style suffix: placed AFTER narrative so subject gets positional
-        # priority.  Trimmable to guarantee narrative budget.
-        style_suffix = style.positive_suffix or ""
+    def _downgrade_one_participant(self, plan: dict[str, LOD]) -> bool:
+        """Downgrade the lowest-priority participant one LOD rung. Returns True
+        if a downgrade was applied, False if every participant is already at
+        background."""
+        # Operate in reverse order so tail participants downgrade first.
+        for ref in reversed(list(plan.keys())):
+            current = plan[ref]
+            idx = self._LOD_ORDER.index(current)
+            if idx < len(self._LOD_ORDER) - 1:
+                plan[ref] = self._LOD_ORDER[idx + 1]
+                return True
+        return False
 
-        tier_tokens = _estimate_tokens(tier_prefix) if tier_prefix else 0
+    def _resolve_all_layers_with_plan(
+        self, target: RenderTarget, plan: dict[str, LOD]
+    ) -> list[LayerContribution]:
+        art = self._resolve_art_sensibility(target)
+        casting = self._resolve_casting_with_plan(target, plan)
+        location = self._resolve_location(target)
+        action = [self._resolve_direction_action(target)]
+        camera = [self._resolve_direction_camera(target)]
 
-        # --- Narrative parts (trimmed if over budget) ---
-        narrative_parts: list[str] = []
-        if cue.subject:
-            narrative_parts.append(cue.subject)
-        if cue.mood:
-            narrative_parts.append(cue.mood)
-        if cue.location:
-            narrative_parts.append(self._resolve_location_tags(cue.location))
-        if cue.characters:
-            narrative_parts.append(", ".join(cue.characters))
-        if cue.tags:
-            narrative_parts.append(", ".join(cue.tags))
+        # Split art sensibility: GENRE/WORLD go early, CULTURE goes late.
+        genre_world = [
+            layer for layer in art
+            if layer.slot in ("ART_SENSIBILITY.GENRE", "ART_SENSIBILITY.WORLD")
+        ]
+        culture = [layer for layer in art if layer.slot == "ART_SENSIBILITY.CULTURE"]
 
-        # For portrait renders, reinforce character distinctiveness.
-        # Appended last so it's the first thing dropped under budget pressure.
-        if cue.tier in (RenderTier.PORTRAIT, RenderTier.PORTRAIT_SQUARE):
-            narrative_parts.append(
-                "solo character, detailed distinctive features, unique appearance"
+        return genre_world + casting + location + action + camera + culture
+
+    def _resolve_casting_with_plan(
+        self, target: RenderTarget, plan: dict[str, LOD]
+    ) -> list[LayerContribution]:
+        if target.kind == "poi":
+            return self._resolve_casting(target)
+        layers: list[LayerContribution] = []
+        refs: list[str] = (
+            [target.character]
+            if target.kind == "portrait" and target.character
+            else list(target.participants)
+        )
+        for ref in refs:
+            lod = plan.get(ref, LOD.SOLO)
+            tokens = self._characters.get(ref)
+            text = tokens.descriptions[lod]
+            layers.append(
+                LayerContribution(
+                    slot="CASTING",
+                    source=ref,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
             )
+        return layers
 
-        # Count parts for join overhead (commas + spaces between parts).
-        part_count = (1 if tier_prefix else 0) + len(narrative_parts) + (1 if style_suffix else 0)
-        join_overhead = part_count * 1
-        available = _TOKEN_LIMIT - tier_tokens - join_overhead
+    def _apply_slot_eviction(
+        self, layers: list[LayerContribution]
+    ) -> tuple[list[LayerContribution], list[str]]:
+        result = [lay.model_copy() for lay in layers]
+        dropped: list[str] = []
 
-        # Cap style to guarantee narrative minimum budget.
-        style_tokens = _estimate_tokens(style_suffix)
-        if style_suffix and available - style_tokens < self._MIN_NARRATIVE_TOKENS:
-            max_style = max(0, available - self._MIN_NARRATIVE_TOKENS)
-            if max_style > 0:
-                style_suffix = _truncate_to_tokens(style_suffix, max_style)
-                style_tokens = _estimate_tokens(style_suffix)
-            else:
-                style_suffix = ""
-                style_tokens = 0
+        def _truncate(layer: LayerContribution, keep_tokens: int) -> None:
+            words = layer.tokens.split()
+            keep_words = max(1, int(keep_tokens / _TOKENS_PER_WORD))
+            layer.tokens = " ".join(words[:keep_words])
+            layer.estimated_tokens = _estimate_tokens(layer.tokens)
 
-        narrative_budget = available - style_tokens
-
-        kept: list[str] = []
-        used = 0
-        for part in narrative_parts:
-            part_tokens = _estimate_tokens(part)
-            if used + part_tokens <= narrative_budget:
-                kept.append(part)
-                used += part_tokens
-            else:
-                # Try to fit a truncated version of this part
-                remaining = narrative_budget - used
-                if remaining > 2:
-                    truncated = _truncate_to_tokens(part, remaining)
-                    if truncated:
-                        kept.append(truncated)
-                        used += _estimate_tokens(truncated)
-                log.debug(
-                    "Token budget: trimmed narrative from %d to %d tokens "
-                    "(style capped to preserve character detail)",
-                    sum(_estimate_tokens(p) for p in narrative_parts),
-                    used,
-                )
-                break  # remaining parts are lower priority — drop them
-
-        # Assemble order depends on tier:
-        # - PORTRAIT: tier + narrative + style (character subject leads)
-        # - Other tiers: style + tier + narrative (genre atmosphere leads)
-        final: list[str] = []
-        if cue.tier in (RenderTier.PORTRAIT, RenderTier.PORTRAIT_SQUARE):
-            if tier_prefix:
-                final.append(tier_prefix)
-            final.extend(kept)
-            if style_suffix:
-                final.append(style_suffix)
-        else:
-            if style_suffix:
-                final.append(style_suffix)
-            if tier_prefix:
-                final.append(tier_prefix)
-            final.extend(kept)
-
-        return ", ".join(final)
-
-    def _build_clip(self, cue: StageCue, style: VisualStyle) -> str:
-        """Build CLIP encoder prompt — short style/aesthetic keywords.
-
-        CLIP (clip_l) understands artistic style, medium, lighting, and mood
-        keywords. Keep this short and tag-like; detailed content goes to T5.
-        """
-        parts: list[str] = []
-        tier_prefix = _TIER_PROMPT_PREFIX.get(cue.tier, "")
-        if tier_prefix:
-            parts.append(tier_prefix)
-        if style.positive_suffix:
-            parts.append(style.positive_suffix)
-        if cue.mood:
-            parts.append(cue.mood)
-        return ", ".join(parts)
-
-    def _resolve_location_tags(self, location: str) -> str:
-        loc_lower = location.lower()
-        tags: str | None = None
-
-        # Check overrides first.
-        for key, tag_str in self._tag_overrides.items():
-            if key in loc_lower:
-                tags = tag_str
+        for eviction_label, preserve in self._EVICTION_ORDER:
+            if sum(lay.estimated_tokens for lay in result) <= _TOKEN_LIMIT:
                 break
 
-        # Check default tags.
-        if tags is None:
-            for key, tag_str in _DEFAULT_LOCATION_TAGS.items():
-                if key in loc_lower:
-                    tags = tag_str
-                    break
+            base_slot, _, flourish = eviction_label.partition(".")
+            if flourish == "flourish":
+                for layer in result:
+                    if layer.slot == base_slot or layer.slot.startswith(
+                        base_slot + "."
+                    ):
+                        if layer.estimated_tokens > preserve:
+                            _truncate(layer, preserve)
+                            dropped.append(
+                                f"{layer.slot}:{layer.source}:flourish",
+                            )
+            else:
+                # Drop entirely
+                before = len(result)
+                result = [lay for lay in result if lay.slot != eviction_label]
+                if len(result) < before:
+                    dropped.append(eviction_label)
 
-        if tags is None:
-            raise ValueError(
-                f"No visual_tag_override or default for location type {location!r}; "
-                f"add it to the world's visual_style.yaml::visual_tag_overrides "
-                f"(the fantasy-biased _DEFAULT_LOCATION_TAGS does not cover non-fantasy genres)."
-            )
+        return result, dropped
 
-        # Apply location weight — truncate tag list when weight < 1.0
-        weight = self.weights.get("location", 1.0)
-        if weight < 1.0:
-            parts = [p.strip() for p in tags.split(",")]
-            keep = max(1, int(len(parts) * weight))
-            return ", ".join(parts[:keep])
+    def _character_lod_plan(self, target: RenderTarget) -> dict[str, LOD]:
+        if target.kind == "portrait":
+            assert target.character is not None
+            return {target.character: LOD.SOLO}
+        if target.kind == "illustration":
+            participants = list(target.participants)
+            n = len(participants)
+            if n == 1:
+                return {participants[0]: LOD.SOLO}
+            if n == 2:
+                return {p: LOD.LONG for p in participants}
+            if 3 <= n <= 4:
+                return {
+                    **{participants[0]: LOD.LONG},
+                    **{p: LOD.SHORT for p in participants[1:]},
+                }
+            # n >= 5
+            return {
+                participants[0]: LOD.LONG,
+                participants[1]: LOD.SHORT,
+                participants[2]: LOD.SHORT,
+                **{p: LOD.BACKGROUND for p in participants[3:]},
+            }
+        return {}  # POI targets have no character plan
 
-        return tags
+    def _place_lod_for(self, target: RenderTarget) -> PlaceLOD:
+        if target.kind == "poi":
+            return PlaceLOD.SOLO
+        if target.kind == "illustration":
+            return PlaceLOD.BACKDROP
+        if target.kind == "portrait" and target.background:
+            return PlaceLOD.BACKDROP
+        return PlaceLOD.SOLO  # unreachable for current targets, safe default
 
-    def _build_negative(self, cue: StageCue, style: VisualStyle) -> str:
-        parts: list[str] = [_BASE_NEGATIVES]
+    def _resolve_casting(
+        self, target: RenderTarget
+    ) -> list[LayerContribution]:
+        if target.kind in ("portrait", "illustration"):
+            plan = self._character_lod_plan(target)
+            layers: list[LayerContribution] = []
+            for ref, lod in plan.items():
+                tokens = self._characters.get(ref)
+                text = tokens.descriptions[lod]
+                layers.append(
+                    LayerContribution(
+                        slot="CASTING",
+                        source=ref,
+                        tokens=text,
+                        estimated_tokens=_estimate_tokens(text),
+                    ),
+                )
+            return layers
+        if target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            lod = self._place_lod_for(target)
+            text = place.landmark[lod]
+            return [
+                LayerContribution(
+                    slot="CASTING",
+                    source=target.place,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        return []
 
-        if style.negative_prompt:
-            parts.append(style.negative_prompt)
+    def _resolve_location(
+        self, target: RenderTarget
+    ) -> list[LayerContribution]:
+        if target.kind == "portrait":
+            if not target.background:
+                return []
+            place = self._places.get(target.background)
+            lod = PlaceLOD.BACKDROP
+            text = place.environment[lod]
+            return [
+                LayerContribution(
+                    slot="LOCATION",
+                    source=target.background,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        if target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            text = place.environment[PlaceLOD.SOLO]
+            return [
+                LayerContribution(
+                    slot="LOCATION",
+                    source=target.place,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        if target.kind == "illustration":
+            assert target.location is not None
+            place = self._places.get(target.location)
+            lod = PlaceLOD.BACKDROP
+            parts: list[str] = []
+            if place.landmark[lod]:
+                parts.append(place.landmark[lod])
+            if place.environment[lod]:
+                parts.append(place.environment[lod])
+            text = ", ".join(parts)
+            return [
+                LayerContribution(
+                    slot="LOCATION",
+                    source=target.location,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        return []
 
-        if cue.tier == RenderTier.TACTICAL_SKETCH:
-            parts.append("illegible text, blurry labels, overlapping tokens, 3D perspective, realistic rendering, photographic")
-        elif cue.tier == RenderTier.SCENE_ILLUSTRATION:
-            parts.append("cluttered, messy composition, smooth digital render, photograph-like, photo-smooth")
+    def _resolve_direction_action(
+        self, target: RenderTarget
+    ) -> LayerContribution:
+        if target.kind == "portrait":
+            assert target.character is not None
+            if target.pose_override:
+                text = target.pose_override
+                source = "inline"
+            else:
+                text = self._characters.get(target.character).default_pose
+                source = f"{target.character}.default_pose"
+        elif target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            text = place.description[PlaceLOD.SOLO]
+            source = target.place
+        elif target.kind == "illustration":
+            text = target.action
+            source = "inline"
+        else:
+            text, source = "", "inline"
+        return LayerContribution(
+            slot="DIRECTION_ACTION",
+            source=source,
+            tokens=text,
+            estimated_tokens=_estimate_tokens(text),
+        )
 
+    def _resolve_direction_camera(
+        self, target: RenderTarget
+    ) -> LayerContribution:
+        recipe = self._recipes.get(target.kind)
+        if recipe.direction_camera == "{camera}":
+            assert target.camera is not None
+            preset = target.camera
+        else:
+            preset = CameraPreset(recipe.direction_camera)
+        spec = self._cameras.get(preset)
+        return LayerContribution(
+            slot="DIRECTION_CAMERA",
+            source=preset.value,
+            tokens=spec.prompt,
+            estimated_tokens=_estimate_tokens(spec.prompt),
+        )
+
+    def _resolve_art_sensibility(
+        self, target: RenderTarget
+    ) -> list[LayerContribution]:
+        recipe = self._recipes.get(target.kind)
+        layers: list[LayerContribution] = []
+
+        for layer_name in recipe.art_sensibility:
+            if layer_name == "GENRE":
+                text = self._styles.get_genre(target.genre)
+                layers.append(
+                    LayerContribution(
+                        slot="ART_SENSIBILITY.GENRE",
+                        source=f"genre:{target.genre}",
+                        tokens=text,
+                        estimated_tokens=_estimate_tokens(text),
+                    ),
+                )
+            elif layer_name == "WORLD":
+                text = self._styles.get_world(target.genre, target.world)
+                layers.append(
+                    LayerContribution(
+                        slot="ART_SENSIBILITY.WORLD",
+                        source=f"world:{target.genre}/{target.world}",
+                        tokens=text,
+                        estimated_tokens=_estimate_tokens(text),
+                    ),
+                )
+            elif layer_name == "CULTURE":
+                cultures = self._collect_cultures(target)
+                for culture in cultures:
+                    text = self._styles.get_culture(
+                        target.genre, target.world, culture,
+                    )
+                    layers.append(
+                        LayerContribution(
+                            slot="ART_SENSIBILITY.CULTURE",
+                            source=f"culture:{target.genre}/{target.world}/{culture}",
+                            tokens=text,
+                            estimated_tokens=_estimate_tokens(text),
+                        ),
+                    )
+        return layers
+
+    def _collect_cultures(self, target: RenderTarget) -> list[str]:
+        seen: list[str] = []
+        refs: list[str] = []
+        if target.kind == "portrait":
+            assert target.character is not None
+            refs = [target.character]
+        elif target.kind == "illustration":
+            refs = list(target.participants)
+        elif target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            if place.controlling_culture:
+                return [place.controlling_culture]
+            return []
+        for ref in refs:
+            c = self._characters.get(ref).culture
+            if c and c not in seen:
+                seen.append(c)
+        return seen
+
+    def _assemble(self, layers: list[LayerContribution]) -> str:
+        # Order: GENRE, WORLD, CASTING, LOCATION, DIRECTION_ACTION,
+        # DIRECTION_CAMERA, CULTURE, safety clause.
+        by_slot: dict[str, list[str]] = {}
+        for layer in layers:
+            if layer.tokens:
+                by_slot.setdefault(layer.slot, []).append(layer.tokens)
+
+        ordered: list[str] = []
+        for slot in (
+            "ART_SENSIBILITY.GENRE",
+            "ART_SENSIBILITY.WORLD",
+            "CASTING",
+            "LOCATION",
+            "DIRECTION_ACTION",
+            "DIRECTION_CAMERA",
+            "ART_SENSIBILITY.CULTURE",
+        ):
+            if slot in by_slot:
+                ordered.extend(by_slot[slot])
+
+        ordered.append(_HOUSE_SAFETY_CLAUSE)
+        return ", ".join(ordered)
+
+    def _build_clip(self, layers: list[LayerContribution]) -> str:
+        # CLIP gets short style-adjacent keywords — GENRE + CAMERA.
+        parts: list[str] = []
+        for layer in layers:
+            if layer.slot in ("ART_SENSIBILITY.GENRE", "DIRECTION_CAMERA"):
+                parts.append(layer.tokens)
         return ", ".join(parts)
 
-    def _select_worker(self, cue: StageCue, style: VisualStyle) -> str:
-        return style.preferred_model
+    def _build_negative(self, target: RenderTarget) -> str:
+        # Preserve base + tier-specific negatives that used to hang on
+        # TACTICAL_SKETCH / SCENE_ILLUSTRATION.
+        parts = [_BASE_NEGATIVES]
+        if (
+            target.kind == "illustration"
+            and target.camera
+            and target.camera.value == "topdown_90"
+        ):
+            parts.append(
+                "illegible text, blurry labels, overlapping tokens, "
+                "3D perspective, realistic rendering",
+            )
+        return ", ".join(parts)
 
-    def _derive_seed(self, cue: StageCue, style: VisualStyle) -> int:
-        key_parts = [
-            cue.subject,
-            cue.tier.value,
-            cue.location,
-            "|".join(sorted(cue.characters)),
-        ]
+    def _select_worker(self, target: RenderTarget) -> str:  # noqa: ARG002
+        # For now, all renders target the zimage worker. Style.preferred_model
+        # override can be re-introduced once PR lands — tracked in Task 25.
+        return "zimage"
+
+    def _derive_seed(self, target: RenderTarget) -> int:
+        key_parts: list[str] = [target.kind, target.world, target.genre]
+        if target.character:
+            key_parts.append(target.character)
+        if target.place:
+            key_parts.append(target.place)
+        if target.location:
+            key_parts.append(target.location)
+        key_parts.extend(sorted(target.participants))
+        key_parts.append(target.action)
+        if target.camera:
+            key_parts.append(target.camera.value)
         key = ":".join(key_parts)
         digest = hashlib.sha256(key.encode()).hexdigest()
-        return (int(digest[:8], 16) + style.base_seed) % (2**32)
+        return int(digest[:8], 16) % (2**32)

@@ -29,7 +29,7 @@ def test_tier_configs_match_render_tier_enum(worker: ZImageMLXWorker):
     assert "portrait" in worker.TIER_CONFIGS
     assert "landscape" in worker.TIER_CONFIGS
     assert "text_overlay" in worker.TIER_CONFIGS
-    assert "tactical_sketch" in worker.TIER_CONFIGS
+    assert "tactical_sketch" not in worker.TIER_CONFIGS
     assert "fog_of_war" in worker.TIER_CONFIGS
     assert "cartography" in worker.TIER_CONFIGS
 

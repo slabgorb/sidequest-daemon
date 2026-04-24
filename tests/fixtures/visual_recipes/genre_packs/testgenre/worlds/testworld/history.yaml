@@ -1,0 +1,12 @@
+chapters:
+  - name: The Present Age
+    points_of_interest:
+      - slug: the_lookout
+        name: The Lookout
+        controlling_culture: ironhand
+        visual_prompt:
+          solo: "a weathered stone watchtower atop a rocky promontory, iron-banded timber door, narrow slit windows, a copper weathervane in the shape of an axe"
+          backdrop: "a stone watchtower on a rocky promontory"
+        environment:
+          solo: "barren upland, bruised amber sky, distant mountain silhouettes, scattered gorse"
+          backdrop: "barren upland, bruised sky"

@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 log = logging.getLogger(__name__)
 
+from sidequest_daemon.media.recipes import CameraPreset
 from sidequest_daemon.renderer.models import RenderTier, StageCue
 
 if TYPE_CHECKING:
@@ -235,7 +236,7 @@ def _split_sentences(text: str) -> list[str]:
 
 
 def _extract_combat_subject(narrative: str, character_names: list[str]) -> str:
-    """Extract combatants + action from narrative for TACTICAL_SKETCH.
+    """Extract combatants + action from narrative for SCENE_ILLUSTRATION with topdown_90 camera.
 
     Collects ALL combatant name+action pairs and formats as comma-separated
     positional tokens with 'positions:' prefix for map-like prompts.
@@ -373,7 +374,7 @@ class SceneInterpreter:
 
         Rules are evaluated in priority order:
         1. Location change → LANDSCAPE
-        2. Combat initiation → TACTICAL_SKETCH
+        2. Combat initiation → SCENE_ILLUSTRATION with topdown_90 camera
         3. Character introduction → PORTRAIT
         4. Special effects → SCENE_ILLUSTRATION (tagged)
         5. Mood/atmosphere → SCENE_ILLUSTRATION
@@ -467,18 +468,19 @@ class SceneInterpreter:
                 characters=character_names,
             ))
 
-        # Rule 2: Combat → TACTICAL_SKETCH
+        # Rule 2: Combat → SCENE_ILLUSTRATION with topdown_90 camera
         # FOG_OF_WAR is for /map command only (programmatic PNG, no daemon).
-        # TACTICAL_SKETCH goes through Flux for AI-generated combat maps.
+        # Combat goes through Z-Image as SCENE_ILLUSTRATION with a top-down camera preset.
         has_combat = _COMBAT_PATTERNS.search(narrative)
         if has_combat:
             combat_subject = _extract_combat_subject(narrative, character_names)
             cues.append(StageCue(
-                tier=RenderTier.TACTICAL_SKETCH,
+                tier=RenderTier.SCENE_ILLUSTRATION,
                 subject=combat_subject,
                 tags=["combat"],
                 characters=character_names,
                 location=state.location,
+                camera=CameraPreset.topdown_90,
             ))
 
         # Rule 3: Character introduction → PORTRAIT (skip when combat already detected)

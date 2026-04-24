@@ -1,0 +1,4 @@
+positive_suffix: "painterly digital illustration, muted desaturated palette, gritty mood"
+negative_prompt: "watermark, blurry, deformed"
+base_seed: 42
+preferred_model: "zimage"

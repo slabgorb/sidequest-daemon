@@ -1,0 +1,89 @@
+# sidequest-daemon/cameras.yaml
+# 17 camera presets. Stills-only — no motion techniques.
+# See docs/superpowers/specs/2026-04-24-explicit-visual-recipes-design.md
+
+# --- Portrait framings ---
+portrait_3q:
+  prompt: >-
+    three-quarter view portrait, centered subject, detailed face,
+    shoulders-up framing
+
+portrait_profile:
+  prompt: >-
+    profile view portrait, sharp silhouette, subject facing left, bust framing
+
+portrait_closeup:
+  prompt: >-
+    tight face-only portrait, emotional weight, shallow depth of field
+
+portrait_full_body:
+  prompt: >-
+    full-body standing portrait, full outfit and stance visible, grounded pose
+
+# --- POI framings ---
+wide_establishing:
+  prompt: >-
+    wide establishing shot, environmental context, mid-distance subject,
+    atmospheric depth
+
+low_angle_hero:
+  prompt: >-
+    low-angle hero shot looking up at the landmark, monumental presence,
+    sky filling the upper frame
+
+interior_wide:
+  prompt: >-
+    wide architectural interior, depth receding, leading lines, grounded floor
+
+aerial_oblique:
+  prompt: >-
+    high-angle aerial oblique, landscape scale, map-like clarity,
+    diminishing detail to horizon
+
+# --- Illustration framings ---
+scene:
+  prompt: >-
+    painterly mid-distance composition, narrative staging, balanced framing
+
+over_shoulder:
+  prompt: >-
+    over-the-shoulder two-shot, foreground silhouette, focused subject beyond
+
+wide_action:
+  prompt: >-
+    wide action shot, middle-distance subjects, environmental context,
+    kinetic staging
+
+closeup_action:
+  prompt: >-
+    tight closeup on a single action beat, kinetic energy, shallow depth
+
+topdown_90:
+  prompt: >-
+    orthographic top-down tactical view, 90-degree overhead angle, battle-map
+    framing, clear spacing between subjects, no perspective
+
+# --- Signature shots ---
+extreme_closeup_leone:
+  prompt: >-
+    tight portrait, single dominant facial feature, macro detail, heavy
+    chiaroscuro, sweat and skin texture, shallow depth of field
+  post:
+    kind: crop
+    mode: center
+    percent: 0.25
+
+dutch_tilt:
+  prompt: >-
+    dutch angle, camera tilted 15-25 degrees off-horizontal, destabilized
+    composition, disoriented framing
+
+single_point_perspective_kubrick:
+  prompt: >-
+    rigid symmetric one-point perspective, corridor or hall receding to
+    central vanishing point, centered subject, architectural order
+
+trunk_shot_tarantino:
+  prompt: >-
+    low POV looking up from inside a container, subjects leaning over the
+    frame, worm's-eye angle

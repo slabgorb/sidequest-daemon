@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sys
 import time
 import uuid
@@ -16,7 +17,88 @@ from pathlib import Path
 
 from opentelemetry import trace
 
+from sidequest_daemon.media.camera_specs import CameraLoader
+from sidequest_daemon.media.catalogs import (
+    CharacterCatalog,
+    PlaceCatalog,
+    StyleCatalog,
+)
+from sidequest_daemon.media.prompt_composer import PromptComposer
+from sidequest_daemon.media.recipe_loader import RecipeLoader
+from sidequest_daemon.media.recipes import (
+    CameraPreset,
+    ComposedPrompt,
+    RenderTarget,
+)
+from sidequest_daemon.renderer.models import RenderTier, StageCue
+
 log = logging.getLogger(__name__)
+
+_DAEMON_ROOT = Path(__file__).resolve().parents[3]
+
+
+def _get_composer(genre: str, world: str) -> PromptComposer:
+    """Build a composer scoped to the target's world."""
+    packs_root = Path(os.environ["SIDEQUEST_GENRE_PACKS"])
+    return PromptComposer(
+        recipes=RecipeLoader.from_file(_DAEMON_ROOT / "recipes.yaml"),
+        cameras=CameraLoader.from_file(_DAEMON_ROOT / "cameras.yaml"),
+        characters=CharacterCatalog.load(packs_root, genre=genre, world=world),
+        places=PlaceCatalog.load(packs_root, genre=genre, world=world),
+        styles=StyleCatalog.load(packs_root, genre=genre, world=world),
+    )
+
+
+def build_render_target(cue: StageCue) -> RenderTarget:
+    """Translate a StageCue into a RenderTarget.
+
+    `cue.metadata["world"]` and `cue.metadata["genre"]` are required — fail
+    loud if either is missing.
+    """
+    world = cue.metadata.get("world")
+    genre = cue.metadata.get("genre")
+    if not world or not genre:
+        raise ValueError(
+            "StageCue.metadata must carry `world` and `genre` for composer routing",
+        )
+
+    if cue.tier in (RenderTier.PORTRAIT, RenderTier.PORTRAIT_SQUARE):
+        character = cue.characters[0] if cue.characters else cue.subject
+        return RenderTarget(
+            kind="portrait",
+            world=world,
+            genre=genre,
+            character=character,
+            camera=cue.camera,
+        )
+    if cue.tier == RenderTier.LANDSCAPE:
+        # POI render: subject is a `where:` ref.
+        return RenderTarget(
+            kind="poi",
+            world=world,
+            genre=genre,
+            place=cue.subject,
+        )
+    if cue.tier == RenderTier.SCENE_ILLUSTRATION:
+        return RenderTarget(
+            kind="illustration",
+            world=world,
+            genre=genre,
+            participants=cue.characters,
+            location=cue.location or cue.metadata.get("location_ref", ""),
+            action=cue.subject,
+            camera=cue.camera or CameraPreset.scene,
+        )
+    raise ValueError(f"unsupported tier for composer routing: {cue.tier!r}")
+
+
+def compose_prompt_for(cue: StageCue) -> ComposedPrompt:
+    """Build a ComposedPrompt from a StageCue end-to-end."""
+    world = cue.metadata["world"]
+    genre = cue.metadata["genre"]
+    composer = _get_composer(genre, world)
+    target = build_render_target(cue)
+    return composer.compose(target)
 
 
 class ZImageMLXWorker:
@@ -30,7 +112,6 @@ class ZImageMLXWorker:
         "landscape":          {"steps": 20, "guidance": 4.0, "w": 1024, "h": 768},
         "text_overlay":       {"steps": 20, "guidance": 4.0, "w": 768,  "h": 512},
         "cartography":        {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
-        "tactical_sketch":    {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
         "fog_of_war":         {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
     }
 

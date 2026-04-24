@@ -1,0 +1,520 @@
+from pathlib import Path
+
+import pytest
+
+from sidequest_daemon.media.camera_specs import CameraLoader
+from sidequest_daemon.media.catalogs import (
+    CharacterCatalog,
+    PlaceCatalog,
+    StyleCatalog,
+)
+from sidequest_daemon.media.prompt_composer import PromptComposer
+from sidequest_daemon.media.recipe_loader import RecipeLoader
+from sidequest_daemon.media.recipes import (
+    CameraPreset,
+    CatalogMissError,
+    LOD,
+    PlaceLOD,
+    RenderTarget,
+)
+
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "visual_recipes" / "genre_packs"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.fixture
+def composer() -> PromptComposer:
+    return PromptComposer(
+        recipes=RecipeLoader.from_file(REPO_ROOT / "recipes.yaml"),
+        cameras=CameraLoader.from_file(REPO_ROOT / "cameras.yaml"),
+        characters=CharacterCatalog.load(
+            FIXTURE_ROOT, genre="testgenre", world="testworld"
+        ),
+        places=PlaceCatalog.load(
+            FIXTURE_ROOT, genre="testgenre", world="testworld"
+        ),
+        styles=StyleCatalog.load(
+            FIXTURE_ROOT, genre="testgenre", world="testworld"
+        ),
+    )
+
+
+def test_composer_constructs(composer: PromptComposer) -> None:
+    assert composer is not None
+
+
+def test_portrait_lod_plan_is_solo(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    plan = composer._character_lod_plan(t)
+    assert plan == {"npc:rux": LOD.SOLO}
+
+
+def test_illustration_one_participant_is_solo(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="thinking",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    assert composer._character_lod_plan(t) == {"npc:rux": LOD.SOLO}
+
+
+def test_illustration_two_participants_both_long(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux", "npc:mira"], action="arguing",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    assert composer._character_lod_plan(t) == {
+        "npc:rux": LOD.LONG,
+        "npc:mira": LOD.LONG,
+    }
+
+
+def test_illustration_four_participants_focus_long_rest_short(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux", "npc:mira", "npc:a", "npc:b"],
+        action="around a table", location="where:testgenre/tavern",
+        camera=CameraPreset.scene,
+    )
+    plan = composer._character_lod_plan(t)
+    assert plan["npc:rux"] == LOD.LONG
+    for other in ("npc:mira", "npc:a", "npc:b"):
+        assert plan[other] == LOD.SHORT
+
+
+def test_illustration_six_participants_tail_background(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux", "npc:a", "npc:b", "npc:c", "npc:d", "npc:e"],
+        action="tavern brawl", location="where:testgenre/tavern",
+        camera=CameraPreset.scene,
+    )
+    plan = composer._character_lod_plan(t)
+    assert plan["npc:rux"] == LOD.LONG
+    assert plan["npc:a"] == LOD.SHORT
+    assert plan["npc:b"] == LOD.SHORT
+    assert plan["npc:c"] == LOD.BACKGROUND
+    assert plan["npc:d"] == LOD.BACKGROUND
+    assert plan["npc:e"] == LOD.BACKGROUND
+
+
+def test_poi_lod_solo(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/the_lookout",
+    )
+    assert composer._place_lod_for(t) == PlaceLOD.SOLO
+
+
+def test_illustration_place_lod_backdrop(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    assert composer._place_lod_for(t) == PlaceLOD.BACKDROP
+
+
+def test_casting_portrait_uses_solo_description(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layers = composer._resolve_casting(t)
+    assert len(layers) == 1
+    assert layers[0].slot == "CASTING"
+    assert layers[0].source == "npc:rux"
+    assert "inquisitor" in layers[0].tokens
+    assert "grey wool cassock" in layers[0].tokens  # solo is richest
+
+
+def test_casting_illustration_two_uses_long(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux", "npc:mira"], action="arguing",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_casting(t)
+    assert len(layers) == 2
+    rux = next(layer for layer in layers if layer.source == "npc:rux")
+    assert rux.tokens.startswith("gaunt inquisitor in grey wool")
+
+
+def test_casting_poi_uses_landmark(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/the_lookout",
+    )
+    layers = composer._resolve_casting(t)
+    assert len(layers) == 1
+    assert layers[0].source == "where:testworld/the_lookout"
+    assert "watchtower" in layers[0].tokens
+
+
+def test_location_portrait_empty_when_no_background(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layers = composer._resolve_location(t)
+    assert layers == []
+
+
+def test_location_poi_uses_environment(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/the_lookout",
+    )
+    layers = composer._resolve_location(t)
+    assert len(layers) == 1
+    assert "upland" in layers[0].tokens
+
+
+def test_location_illustration_specific_uses_landmark_plus_environment(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_location(t)
+    combined = " ".join(layer.tokens for layer in layers)
+    assert "watchtower" in combined
+    assert "upland" in combined
+
+
+def test_location_illustration_archetypal_uses_environment_only(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="drinking",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_location(t)
+    combined = " ".join(layer.tokens for layer in layers)
+    assert "hearth" in combined
+
+
+def test_portrait_direction_action_uses_default_pose(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layer = composer._resolve_direction_action(t)
+    assert "neutral expression" in layer.tokens
+
+
+def test_portrait_direction_action_honors_pose_override(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+        pose_override="turning sharply, accusing gesture",
+    )
+    layer = composer._resolve_direction_action(t)
+    assert "accusing" in layer.tokens
+
+
+def test_illustration_direction_action_is_inline(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arguing at the door",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    layer = composer._resolve_direction_action(t)
+    assert "arguing" in layer.tokens
+
+
+def test_portrait_camera_uses_recipe_default(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layer = composer._resolve_direction_camera(t)
+    assert "three-quarter" in layer.tokens
+
+
+def test_illustration_camera_from_render_target(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="ambush",
+        location="where:testgenre/tavern", camera=CameraPreset.topdown_90,
+    )
+    layer = composer._resolve_direction_camera(t)
+    assert "top-down" in layer.tokens
+
+
+def test_cascade_genre_world_culture_portrait(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layers = composer._resolve_art_sensibility(t)
+    slots = [layer.slot for layer in layers]
+    assert "ART_SENSIBILITY.GENRE" in slots
+    assert "ART_SENSIBILITY.WORLD" in slots
+    assert "ART_SENSIBILITY.CULTURE" in slots
+
+
+def test_cascade_world_empty_still_emitted_as_empty(
+    composer: PromptComposer,
+) -> None:
+    # testworld has a visual_style; WORLD layer should have tokens.
+    layers = composer._resolve_art_sensibility(
+        RenderTarget(
+            kind="portrait", world="testworld", genre="testgenre",
+            character="npc:rux",
+        ),
+    )
+    world_layer = next(layer for layer in layers if layer.slot == "ART_SENSIBILITY.WORLD")
+    assert world_layer.tokens
+
+
+def test_cascade_illustration_merges_multiple_cultures(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux", "npc:mira"], action="standing watch",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_art_sensibility(t)
+    culture_layers = [layer for layer in layers if layer.slot == "ART_SENSIBILITY.CULTURE"]
+    # Rux and Mira share `ironhand`; dedupe produces one culture layer.
+    assert len(culture_layers) == 1
+    assert "iron-chased" in culture_layers[0].tokens
+
+
+def test_compose_portrait_assembles_in_order(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    result = composer.compose(t)
+    # Assembly order per spec:
+    # GENRE, WORLD, CASTING, LOCATION, DIRECTION_ACTION, DIRECTION_CAMERA,
+    # CULTURE, safety clause.
+    genre_idx = result.positive_prompt.find("painterly")
+    casting_idx = result.positive_prompt.find("inquisitor")
+    camera_idx = result.positive_prompt.find("three-quarter")
+    culture_idx = result.positive_prompt.find("monastic severity")
+    safety_idx = result.positive_prompt.find("solo character focus")
+    assert 0 <= genre_idx < casting_idx < camera_idx < culture_idx < safety_idx
+
+
+def test_compose_illustration_specific_location_contains_landmark(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    result = composer.compose(t)
+    assert "watchtower" in result.positive_prompt
+    assert "arriving" in result.positive_prompt
+
+
+def test_compose_populates_layers_list(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    result = composer.compose(t)
+    slots = {layer.slot for layer in result.layers}
+    assert "CASTING" in slots
+    assert "DIRECTION_CAMERA" in slots
+    assert "ART_SENSIBILITY.GENRE" in slots
+
+
+def test_compose_seed_is_deterministic(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    a = composer.compose(t)
+    b = composer.compose(t)
+    assert a.seed == b.seed
+    assert a.positive_prompt == b.positive_prompt
+
+
+def test_eviction_order_drops_location_flourish_first(
+    composer: PromptComposer,
+) -> None:
+    # Inject a deliberately oversized action to force eviction.
+    # Build a target that exceeds 512 tokens when every layer is full.
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="x " * 360,  # forces overflow past background LOD
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    result = composer.compose(t)
+    # Location flourish should evict before any identity-floor slot.
+    assert any(
+        "LOCATION" in dl or "DIRECTION_ACTION" in dl
+        for dl in result.dropped_layers
+    )
+    assert not any("CASTING" in dl for dl in result.dropped_layers)
+
+
+def test_identity_floor_breach_raises_budget_error(
+    composer: PromptComposer,
+) -> None:
+    from sidequest_daemon.media.recipes import BudgetError  # noqa: PLC0415
+    # npc:verbose has a massive solo description (484+ tokens) that exceeds
+    # the identity floor even after all non-floor slots are evicted.
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:verbose"],
+        action="word " * 600,
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    with pytest.raises(BudgetError):
+        composer.compose(t)
+
+
+def test_budget_downgrade_participants_before_slot_eviction(
+    composer: PromptComposer,
+) -> None:
+    # Six participants + rich culture/environment — forces downgrade
+    # from planned LODs toward `background` for tail participants.
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=[
+            "npc:rux", "npc:mira",
+            # Reuse existing two characters; participant duplication is OK
+            # because LOD downgrade operates on ordinal position not identity.
+            "npc:rux", "npc:mira", "npc:rux", "npc:mira",
+        ],
+        action="argument " * 50,
+        location="where:testworld/the_lookout",
+        camera=CameraPreset.scene,
+    )
+    result = composer.compose(t)
+    # Even under budget pressure, at least one CASTING layer survives for
+    # every participant slot (never drop below background).
+    casting_sources = [lay.source for lay in result.layers if lay.slot == "CASTING"]
+    assert len(casting_sources) == len(t.participants)
+
+
+def test_unknown_character_raises_catalog_miss(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:nobody",
+    )
+    with pytest.raises(CatalogMissError) as exc:
+        composer.compose(t)
+    assert exc.value.missing_id == "npc:nobody"
+
+
+def test_unknown_place_raises_catalog_miss(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/fabricated",
+    )
+    with pytest.raises(CatalogMissError):
+        composer.compose(t)
+
+
+def test_compose_emits_otel_span(composer: PromptComposer, monkeypatch) -> None:
+    emitted: list[dict] = []
+
+    def fake_emit(name: str, payload: dict) -> None:
+        emitted.append({"name": name, "payload": payload})
+
+    monkeypatch.setattr(
+        "sidequest_daemon.media.prompt_composer._emit_watcher_event",
+        fake_emit,
+    )
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    composer.compose(t)
+    assert any(e["name"] == "render.prompt_composed" for e in emitted)
+    span = next(e for e in emitted if e["name"] == "render.prompt_composed")
+    assert span["payload"]["kind"] == "portrait"
+    assert span["payload"]["world"] == "testworld"
+    assert "layers" in span["payload"]
+    assert any(layer["slot"] == "CASTING" for layer in span["payload"]["layers"])
+
+
+GOLDEN_DIR = Path(__file__).parent / "golden"
+
+
+def _assert_golden(name: str, actual: str) -> None:
+    golden_path = GOLDEN_DIR / name
+    if not golden_path.exists():
+        GOLDEN_DIR.mkdir(exist_ok=True)
+        golden_path.write_text(actual)
+        pytest.fail(f"Wrote new golden {name}; inspect and re-run.")
+    expected = golden_path.read_text()
+    assert actual == expected, f"Golden mismatch for {name}. "\
+        f"Delete {golden_path} and re-run to regenerate."
+
+
+def test_golden_portrait(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    _assert_golden("portrait_npc_rux.txt", composer.compose(t).positive_prompt + "\n")
+
+
+def test_golden_poi(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/the_lookout",
+    )
+    _assert_golden("poi_the_lookout.txt", composer.compose(t).positive_prompt + "\n")
+
+
+def test_golden_illustration_specific(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving at dusk",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    _assert_golden(
+        "illustration_specific_location.txt",
+        composer.compose(t).positive_prompt + "\n",
+    )
+
+
+def test_golden_illustration_archetypal(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="drinking",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    _assert_golden(
+        "illustration_archetypal_location.txt",
+        composer.compose(t).positive_prompt + "\n",
+    )
+
+
+def test_golden_illustration_topdown(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="ambush from the doorway",
+        location="where:testworld/the_lookout", camera=CameraPreset.topdown_90,
+    )
+    _assert_golden(
+        "illustration_topdown_90.txt",
+        composer.compose(t).positive_prompt + "\n",
+    )
