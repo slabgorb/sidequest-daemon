@@ -256,3 +256,44 @@ def test_illustration_camera_from_render_target(composer: PromptComposer) -> Non
     )
     layer = composer._resolve_direction_camera(t)
     assert "top-down" in layer.tokens
+
+
+def test_cascade_genre_world_culture_portrait(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layers = composer._resolve_art_sensibility(t)
+    slots = [layer.slot for layer in layers]
+    assert "ART_SENSIBILITY.GENRE" in slots
+    assert "ART_SENSIBILITY.WORLD" in slots
+    assert "ART_SENSIBILITY.CULTURE" in slots
+
+
+def test_cascade_world_empty_still_emitted_as_empty(
+    composer: PromptComposer,
+) -> None:
+    # testworld has a visual_style; WORLD layer should have tokens.
+    layers = composer._resolve_art_sensibility(
+        RenderTarget(
+            kind="portrait", world="testworld", genre="testgenre",
+            character="npc:rux",
+        ),
+    )
+    world_layer = next(layer for layer in layers if layer.slot == "ART_SENSIBILITY.WORLD")
+    assert world_layer.tokens
+
+
+def test_cascade_illustration_merges_multiple_cultures(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux", "npc:mira"], action="standing watch",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_art_sensibility(t)
+    culture_layers = [layer for layer in layers if layer.slot == "ART_SENSIBILITY.CULTURE"]
+    # Rux and Mira share `ironhand`; dedupe produces one culture layer.
+    assert len(culture_layers) == 1
+    assert "iron-chased" in culture_layers[0].tokens

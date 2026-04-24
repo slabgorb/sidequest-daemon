@@ -218,3 +218,66 @@ class PromptComposer:
             tokens=spec.prompt,
             estimated_tokens=_estimate_tokens(spec.prompt),
         )
+
+    def _resolve_art_sensibility(
+        self, target: RenderTarget
+    ) -> list[LayerContribution]:
+        recipe = self._recipes.get(target.kind)
+        layers: list[LayerContribution] = []
+
+        for layer_name in recipe.art_sensibility:
+            if layer_name == "GENRE":
+                text = self._styles.get_genre(target.genre)
+                layers.append(
+                    LayerContribution(
+                        slot="ART_SENSIBILITY.GENRE",
+                        source=f"genre:{target.genre}",
+                        tokens=text,
+                        estimated_tokens=_estimate_tokens(text),
+                    ),
+                )
+            elif layer_name == "WORLD":
+                text = self._styles.get_world(target.genre, target.world)
+                layers.append(
+                    LayerContribution(
+                        slot="ART_SENSIBILITY.WORLD",
+                        source=f"world:{target.genre}/{target.world}",
+                        tokens=text,
+                        estimated_tokens=_estimate_tokens(text),
+                    ),
+                )
+            elif layer_name == "CULTURE":
+                cultures = self._collect_cultures(target)
+                for culture in cultures:
+                    text = self._styles.get_culture(
+                        target.genre, target.world, culture,
+                    )
+                    layers.append(
+                        LayerContribution(
+                            slot="ART_SENSIBILITY.CULTURE",
+                            source=f"culture:{target.genre}/{target.world}/{culture}",
+                            tokens=text,
+                            estimated_tokens=_estimate_tokens(text),
+                        ),
+                    )
+        return layers
+
+    def _collect_cultures(self, target: RenderTarget) -> list[str]:
+        seen: list[str] = []
+        refs: list[str] = []
+        if target.kind == "portrait":
+            assert target.character is not None
+            refs = [target.character]
+        elif target.kind == "illustration":
+            refs = list(target.participants)
+        elif target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            if place.controlling_culture:
+                return [place.controlling_culture]
+            return []
+        for ref in refs:
+            c = self._characters.get(ref).culture
+            if c and c not in seen:
+                seen.append(c)
+        return seen
