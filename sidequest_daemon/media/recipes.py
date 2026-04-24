@@ -150,3 +150,20 @@ class ComposedPrompt(BaseModel):
     layers: list[LayerContribution]
     dropped_layers: list[str]
     warnings: list[str]
+
+
+class CatalogMissError(Exception):
+    """Raised when a catalog reference cannot be resolved. Never silent."""
+
+    def __init__(self, source: str, missing_id: str) -> None:
+        super().__init__(f"{source} has no entry for {missing_id!r}")
+        self.source = source
+        self.missing_id = missing_id
+
+
+class BudgetError(Exception):
+    """Raised when eviction would drop into the identity floor."""
+
+    def __init__(self, message: str, breakdown: dict[str, int]) -> None:
+        super().__init__(f"{message}: {breakdown}")
+        self.breakdown = breakdown

@@ -2,7 +2,9 @@ import pytest
 from pydantic import ValidationError
 
 from sidequest_daemon.media.recipes import (
+    BudgetError,
     CameraPreset,
+    CatalogMissError,
     ComposedPrompt,
     LayerContribution,
     LOD,
@@ -162,3 +164,18 @@ def test_composed_prompt_carries_layers_and_warnings():
         warnings=[],
     )
     assert cp.dropped_layers == []
+
+
+def test_catalog_miss_error_carries_source_and_id():
+    err = CatalogMissError(source="CharacterCatalog", missing_id="npc:ghost")
+    assert "CharacterCatalog" in str(err)
+    assert "npc:ghost" in str(err)
+
+
+def test_budget_error_carries_breakdown():
+    err = BudgetError(
+        message="identity floor breached",
+        breakdown={"CASTING": 200, "ART_SENSIBILITY.GENRE": 320},
+    )
+    assert "identity floor" in str(err)
+    assert err.breakdown["CASTING"] == 200
