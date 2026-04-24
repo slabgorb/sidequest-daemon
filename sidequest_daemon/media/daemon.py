@@ -409,13 +409,21 @@ async def _handle_client(
                             params.get("tier"),
                         )
 
-                # If we have visual_style + subject, compose through PromptComposer
-                if params.get("subject") and params.get("art_style"):
-                    from sidequest_daemon.media.prompt_composer import PromptComposer
+                # Compose through the catalog-injected PromptComposer when we
+                # have enough to route by world/genre. Style, camera, cast, and
+                # places are pulled from the genre pack via catalogs — the
+                # caller does not send `art_style` or `visual_tag_overrides`.
+                if (
+                    params.get("subject")
+                    and params.get("world")
+                    and params.get("genre")
+                    and not params.get("positive_prompt")
+                ):
+                    from sidequest_daemon.media.workers.zimage_mlx_worker import (
+                        compose_prompt_for,
+                    )
                     from sidequest_daemon.renderer.models import RenderTier, StageCue
-                    from sidequest_daemon.genre.models import VisualStyle
 
-                    # Build a StageCue from params
                     tier_str = params.get("tier", "scene_illustration")
                     tier = (
                         RenderTier(tier_str)
@@ -429,20 +437,13 @@ async def _handle_client(
                         mood=params.get("mood", ""),
                         characters=params.get("characters", []),
                         tags=params.get("tags", []),
+                        metadata={
+                            "world": params["world"],
+                            "genre": params["genre"],
+                        },
                     )
 
-                    # Build minimal VisualStyle from params
-                    style = VisualStyle(
-                        positive_suffix=params.get("art_style", ""),
-                        negative_prompt=params.get("negative_prompt", ""),
-                        preferred_model="flux",
-                        visual_tag_overrides=params.get("visual_tag_overrides", {}),
-                    )
-
-                    composer = PromptComposer(
-                        visual_tag_overrides=style.visual_tag_overrides,
-                    )
-                    composed = composer.compose(cue, style)
+                    composed = compose_prompt_for(cue)
                     params["positive_prompt"] = composed.positive_prompt
                     params["clip_prompt"] = composed.clip_prompt
                     params["negative_prompt"] = composed.negative_prompt

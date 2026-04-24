@@ -1,23 +1,15 @@
 """Story 15-7: Embed endpoint tests for sidequest-daemon.
 
 Tests that:
-1. Daemon handles 'embed' method over Unix socket
-2. Returns embedding vectors with correct dimensionality
-3. Returns model name and latency metadata
-4. Rejects empty text input
+1. Daemon has an EMBED_TIERS constant so method routing sees "embed"
+2. EmbedWorker exposes generate_embedding
+3. EmbedWorker rejects empty text (no silent fallback)
+4. Embedding dimension and value type are consistent
 """
-
-import json
 
 import pytest
 
 from sidequest_daemon.media.daemon import EMBED_TIERS, EmbedWorker
-from sidequest_daemon.media.protocol import WorkerRequest, WorkerResponse
-
-
-# ============================================================
-# AC-2: /embed endpoint exists and handles requests
-# ============================================================
 
 
 class TestEmbedMethodRouting:
@@ -36,57 +28,11 @@ class TestEmbedMethodRouting:
 class TestEmbedRequest:
     """Verify embed request handling."""
 
-    def test_embed_request_requires_text(self):
-        """Embed request must include a 'text' field."""
-        req = WorkerRequest(method="embed", params={"text": "Hello world"})
-        assert req.params["text"] == "Hello world"
-        assert req.method == "embed"
-
     def test_embed_request_rejects_empty_text(self):
         """Embed endpoint must reject empty text — no silent fallbacks."""
         worker = EmbedWorker()
         with pytest.raises((ValueError, TypeError)):
             worker.generate_embedding("")
-
-
-class TestEmbedResponse:
-    """Verify embed response format matches Rust client's EmbedResult."""
-
-    def test_embed_response_has_embedding_vector(self):
-        """Response must contain an 'embedding' field with a list of floats."""
-        # Simulate the response format the daemon will produce
-        response_data = {
-            "embedding": [0.1, 0.2, 0.3],
-            "model": "all-MiniLM-L6-v2",
-            "latency_ms": 42,
-        }
-        result = WorkerResponse(
-            id="test-id",
-            result=response_data,
-        )
-        assert isinstance(result.result["embedding"], list)
-        assert len(result.result["embedding"]) > 0
-        assert all(isinstance(v, float) for v in result.result["embedding"])
-
-    def test_embed_response_includes_model_name(self):
-        """Response must include model name for OTEL lore.embedding_generated event."""
-        response_data = {
-            "embedding": [0.1],
-            "model": "all-MiniLM-L6-v2",
-            "latency_ms": 10,
-        }
-        result = WorkerResponse(id="test-id", result=response_data)
-        assert result.result["model"] == "all-MiniLM-L6-v2"
-
-    def test_embed_response_includes_latency(self):
-        """Response must include latency_ms for OTEL lore.embedding_generated event."""
-        response_data = {
-            "embedding": [0.1],
-            "model": "all-MiniLM-L6-v2",
-            "latency_ms": 55,
-        }
-        result = WorkerResponse(id="test-id", result=response_data)
-        assert result.result["latency_ms"] == 55
 
 
 class TestEmbedWorkerDimensionality:

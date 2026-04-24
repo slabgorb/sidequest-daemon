@@ -267,10 +267,10 @@ class ZImageMLXWorker:
     def _compose_prompt(self, params: dict) -> str:
         """Build positive prompt for Z-Image.
 
-        If SubprocessRenderer already composed a prompt (with genre style
-        suffix and location tag overrides), use it directly. Otherwise
-        fall back to building from raw StageCue fields (used by batch
-        scripts like generate_portraits.py).
+        If the daemon dispatch loop already composed a prompt (via
+        compose_prompt_for, which pulls from the catalog-injected
+        PromptComposer), use it directly. Otherwise fall back to
+        building from raw StageCue fields.
         """
         if params.get("positive_prompt"):
             return params["positive_prompt"]
