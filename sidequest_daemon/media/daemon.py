@@ -40,7 +40,18 @@ tracer = trace.get_tracer("sidequest_daemon.media.daemon")
 log = logging.getLogger(__name__)
 
 # Tier → worker routing.
-IMAGE_TIERS = frozenset({"scene_illustration", "portrait", "portrait_square", "landscape", "cartography", "text_overlay", "tactical_sketch", "fog_of_war"})
+IMAGE_TIERS = frozenset(
+    {
+        "scene_illustration",
+        "portrait",
+        "portrait_square",
+        "landscape",
+        "cartography",
+        "text_overlay",
+        "tactical_sketch",
+        "fog_of_war",
+    }
+)
 EMBED_TIERS = frozenset({"embed"})
 
 
@@ -58,6 +69,7 @@ class EmbedWorker:
     def _load_model(self):
         if self._model is None:
             from sentence_transformers import SentenceTransformer
+
             # Story 37-23: pin to CPU. MPS is reserved for Flux renders —
             # running embed on CPU gives it an independent device so the
             # embed path never contends with in-flight image generation
@@ -97,6 +109,7 @@ class WorkerPool:
 
         # GPU memory coordinator — manages 80GB shared budget across backends
         from sidequest_daemon.ml.memory_manager import ModelMemoryManager
+
         self.memory_manager = ModelMemoryManager()
 
     def warm_up_image(self) -> dict:
@@ -104,6 +117,7 @@ class WorkerPool:
         if self._image_loaded:
             return {"worker": "image", "status": "already_warm", "warmup_ms": 0}
         from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
+
         self._image = ZImageMLXWorker(self.output_dir / "zimage")
         log.info("Loading Z-Image...")
         self._image.load_model()
@@ -139,6 +153,7 @@ class WorkerPool:
                 "model": "all-MiniLM-L6-v2",
             }
         import time
+
         start = time.monotonic()
         log.info("Loading SentenceTransformer all-MiniLM-L6-v2 on CPU...")
         self._embed = EmbedWorker()
@@ -230,11 +245,17 @@ async def _handle_client(
                 req_id = req.get("id", "unknown")
                 method = req.get("method")
             except json.JSONDecodeError as e:
-                _write(writer, "unknown", error={"code": "PARSE_ERROR", "message": str(e)})
+                _write(
+                    writer, "unknown", error={"code": "PARSE_ERROR", "message": str(e)}
+                )
                 continue
 
             if not method:
-                _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "Missing 'method'"})
+                _write(
+                    writer,
+                    req_id,
+                    error={"code": "INVALID_REQUEST", "message": "Missing 'method'"},
+                )
                 continue
 
             params = req.get("params", {})
@@ -246,7 +267,9 @@ async def _handle_client(
             elif method == "shutdown":
                 _write(writer, req_id, result={"status": "ok"})
                 log.info("Shutdown requested by client")
-                asyncio.get_event_loop().call_soon(lambda: os.kill(os.getpid(), signal.SIGTERM))
+                asyncio.get_event_loop().call_soon(
+                    lambda: os.kill(os.getpid(), signal.SIGTERM)
+                )
             elif method == "warm_up":
                 try:
                     target = params.get("worker", "all")
@@ -255,27 +278,51 @@ async def _handle_client(
                         results["image"] = await asyncio.to_thread(pool.warm_up_image)
                     if target in ("all", "embed"):
                         results["embed"] = await asyncio.to_thread(pool.warm_up_embed)
-                    _write(writer, req_id, result={"status": "warm", "workers": results})
+                    _write(
+                        writer, req_id, result={"status": "warm", "workers": results}
+                    )
                 except Exception as e:
-                    _write(writer, req_id, error={"code": "WARMUP_FAILED", "message": str(e)})
+                    _write(
+                        writer,
+                        req_id,
+                        error={"code": "WARMUP_FAILED", "message": str(e)},
+                    )
             elif method == "render":
                 # Beat filter: skip non-visual beats before expensive GPU work
                 if params.get("narration") and params.get("game_state"):
                     from sidequest_daemon.renderer.beat_filter import should_generate
-                    from sidequest_daemon.types import GameState, CombatState, ChaseState, Character
+                    from sidequest_daemon.types import (
+                        GameState,
+                        CombatState,
+                        ChaseState,
+                        Character,
+                    )
 
                     gs_raw = params["game_state"]
                     game_state = GameState(
                         location=gs_raw.get("location", ""),
                         time_of_day=gs_raw.get("time_of_day", ""),
-                        characters=[Character(name=c.get("name", "")) for c in gs_raw.get("characters", [])],
-                        combat=CombatState(in_combat=gs_raw.get("combat", {}).get("in_combat", False)),
-                        chase=ChaseState(in_chase=gs_raw.get("chase", {}).get("in_chase", False)),
+                        characters=[
+                            Character(name=c.get("name", ""))
+                            for c in gs_raw.get("characters", [])
+                        ],
+                        combat=CombatState(
+                            in_combat=gs_raw.get("combat", {}).get("in_combat", False)
+                        ),
+                        chase=ChaseState(
+                            in_chase=gs_raw.get("chase", {}).get("in_chase", False)
+                        ),
                     )
                     previous_location = params.get("previous_location")
-                    if not should_generate(params["narration"], game_state, previous_location):
+                    if not should_generate(
+                        params["narration"], game_state, previous_location
+                    ):
                         log.info("beat_filter: skipping non-visual beat")
-                        _write(writer, req_id, result={"status": "skipped", "reason": "beat_filter"})
+                        _write(
+                            writer,
+                            req_id,
+                            result={"status": "skipped", "reason": "beat_filter"},
+                        )
                         continue
 
                 # If narration is provided, use SceneInterpreter for fast rule-based
@@ -289,9 +336,14 @@ async def _handle_client(
                     # Extract documents and strip markers before visual processing
                     scene_interp = SceneInterpreter()
                     genre = params.get("genre", "unknown")
-                    doc_events = scene_interp.extract_documents(narrator_text, genre=genre)
+                    doc_events = scene_interp.extract_documents(
+                        narrator_text, genre=genre
+                    )
                     if doc_events:
-                        log.info("scene_interpreter: extracted %d document(s)", len(doc_events))
+                        log.info(
+                            "scene_interpreter: extracted %d document(s)",
+                            len(doc_events),
+                        )
                         params.setdefault("document_events", [])
                         for doc in doc_events:
                             params["document_events"].append(doc.model_dump())
@@ -303,7 +355,10 @@ async def _handle_client(
                     interp_state = GameState(
                         location=gs_raw.get("location", ""),
                         time_of_day=gs_raw.get("time_of_day", ""),
-                        characters=[Character(name=c.get("name", "")) for c in gs_raw.get("characters", [])],
+                        characters=[
+                            Character(name=c.get("name", ""))
+                            for c in gs_raw.get("characters", [])
+                        ],
                     )
                     cues = scene_interp.interpret(narrator_text, interp_state)
                     if cues:
@@ -322,14 +377,21 @@ async def _handle_client(
                     # Fall back to LLM subject extraction if SceneInterpreter
                     # didn't produce a subject (or for refinement)
                     if not params.get("subject"):
-                        from sidequest_daemon.media.subject_extractor import SubjectExtractor
+                        from sidequest_daemon.media.subject_extractor import (
+                            SubjectExtractor,
+                        )
+
                         extractor = SubjectExtractor()
                         extracted = await extractor.extract(params["narration"])
                         if not extracted or not extracted.get("subject"):
-                            _write(writer, req_id, error={
-                                "code": "EXTRACTION_FAILED",
-                                "message": "SubjectExtractor returned no visual subject from narration. No fallback — refusing to render narrative prose directly.",
-                            })
+                            _write(
+                                writer,
+                                req_id,
+                                error={
+                                    "code": "EXTRACTION_FAILED",
+                                    "message": "SubjectExtractor returned no visual subject from narration. No fallback — refusing to render narrative prose directly.",
+                                },
+                            )
                             continue
                         # Build StageCue-compatible params from extraction
                         params["subject"] = extracted["subject"]
@@ -356,7 +418,11 @@ async def _handle_client(
 
                     # Build a StageCue from params
                     tier_str = params.get("tier", "scene_illustration")
-                    tier = RenderTier(tier_str) if tier_str in {t.value for t in RenderTier} else RenderTier.SCENE_ILLUSTRATION
+                    tier = (
+                        RenderTier(tier_str)
+                        if tier_str in {t.value for t in RenderTier}
+                        else RenderTier.SCENE_ILLUSTRATION
+                    )
                     cue = StageCue(
                         subject=params.get("subject", ""),
                         tier=tier,
@@ -407,8 +473,14 @@ async def _handle_client(
                         except Exception as e:
                             span.set_attribute("error", True)
                             span.set_attribute("error_type", type(e).__name__)
-                            log.exception("render.failed — tier=%s", params.get("tier", ""))
-                            _write(writer, req_id, error={"code": "GENERATION_FAILED", "message": str(e)})
+                            log.exception(
+                                "render.failed — tier=%s", params.get("tier", "")
+                            )
+                            _write(
+                                writer,
+                                req_id,
+                                error={"code": "GENERATION_FAILED", "message": str(e)},
+                            )
             elif method == "embed":
                 # Story 15-7: Generate sentence embeddings for lore fragments.
                 #
@@ -425,7 +497,14 @@ async def _handle_client(
                 #   they run in parallel.
                 text = params.get("text", "")
                 if not text or not text.strip():
-                    _write(writer, req_id, error={"code": "INVALID_REQUEST", "message": "embed requires non-empty 'text' field"})
+                    _write(
+                        writer,
+                        req_id,
+                        error={
+                            "code": "INVALID_REQUEST",
+                            "message": "embed requires non-empty 'text' field",
+                        },
+                    )
                     continue
                 # Story 37-23: wrap dispatch in OTEL span. The lock_name
                 # attribute is the lie detector — if a future regression
@@ -437,6 +516,7 @@ async def _handle_client(
                     async with embed_lock:
                         try:
                             import time
+
                             start = time.monotonic()
                             embedding = await asyncio.to_thread(pool.embed, text)
                             latency_ms = int((time.monotonic() - start) * 1000)
@@ -447,11 +527,15 @@ async def _handle_client(
                                 len(text),
                                 latency_ms,
                             )
-                            _write(writer, req_id, result={
-                                "embedding": embedding,
-                                "model": "all-MiniLM-L6-v2",
-                                "latency_ms": latency_ms,
-                            })
+                            _write(
+                                writer,
+                                req_id,
+                                result={
+                                    "embedding": embedding,
+                                    "model": "all-MiniLM-L6-v2",
+                                    "latency_ms": latency_ms,
+                                },
+                            )
                         except asyncio.CancelledError:
                             # Client disconnect — mark span and propagate so the
                             # event loop can unwind cleanly. CancelledError is a
@@ -470,9 +554,17 @@ async def _handle_client(
                             span.set_attribute("error", True)
                             span.set_attribute("error_type", type(e).__name__)
                             log.exception("embed.failed — text_len=%d", len(text))
-                            _write(writer, req_id, error={"code": "EMBED_FAILED", "message": error_msg})
+                            _write(
+                                writer,
+                                req_id,
+                                error={"code": "EMBED_FAILED", "message": error_msg},
+                            )
             else:
-                _write(writer, req_id, error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"})
+                _write(
+                    writer,
+                    req_id,
+                    error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"},
+                )
     except (ConnectionResetError, BrokenPipeError):
         log.info("Client disconnected: %s", peer)
     finally:
@@ -513,7 +605,9 @@ async def _run_daemon(
     """
     if output_dir is None:
         env_dir = os.environ.get("SIDEQUEST_OUTPUT_DIR")
-        output_dir = Path(env_dir) if env_dir else Path(tempfile.mkdtemp(prefix="sq-daemon-"))
+        output_dir = (
+            Path(env_dir) if env_dir else Path(tempfile.mkdtemp(prefix="sq-daemon-"))
+        )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     if genre_packs is not None:
@@ -534,6 +628,7 @@ async def _run_daemon(
 
     # Initialize audio pipeline via factory
     from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
+
     pipeline_factory = MediaPipelineFactory(
         audio_base_path=genre_packs,
     )
@@ -678,16 +773,16 @@ def main() -> None:
         genre_packs = Path(genre_packs_str) if genre_packs_str else None
         output_dir = Path(output_dir_str) if output_dir_str else None
 
-        asyncio.run(_run_daemon(
-            warmup=warmup,
-            output_dir=output_dir,
-            genre_packs=genre_packs,
-        ))
+        asyncio.run(
+            _run_daemon(
+                warmup=warmup,
+                output_dir=output_dir,
+                genre_packs=genre_packs,
+            )
+        )
 
 
-def validate_startup_config(
-    *, recipes_path: Path, cameras_path: Path
-) -> None:
+def validate_startup_config(*, recipes_path: Path, cameras_path: Path) -> None:
     """Fail-loud validation of recipe + camera YAML at daemon boot."""
     from sidequest_daemon.media.camera_specs import CameraLoader
     from sidequest_daemon.media.recipe_loader import RecipeLoader
