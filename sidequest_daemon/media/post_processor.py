@@ -41,3 +41,22 @@ def _rotate_inscribed(img: Image.Image, degrees: float) -> Image.Image:
     left = (w - new_w) // 2
     top = (h - new_h) // 2
     return rotated.crop((left, top, left + new_w, top + new_h))
+
+
+def required_render_size(
+    target_size: tuple[int, int],
+    directive: PostDirective | None,
+) -> tuple[int, int]:
+    if directive is None:
+        return target_size
+    tw, th = target_size
+    if directive.kind == "crop":
+        percent = directive.percent or 1.0
+        if percent <= 0:
+            raise ValueError("crop percent must be > 0")
+        return (int(tw / percent), int(th / percent))
+    if directive.kind == "rotate":
+        theta = math.radians(abs(directive.degrees or 0.0))
+        denom = max(1e-6, math.cos(theta) - math.sin(theta))
+        return (int(tw / denom) + 1, int(th / denom) + 1)
+    return target_size
