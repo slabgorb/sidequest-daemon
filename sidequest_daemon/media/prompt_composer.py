@@ -123,3 +123,52 @@ class PromptComposer:
                 ),
             ]
         return []
+
+    def _resolve_location(
+        self, target: RenderTarget
+    ) -> list[LayerContribution]:
+        if target.kind == "portrait":
+            if not target.background:
+                return []
+            place = self._places.get(target.background)
+            lod = PlaceLOD.BACKDROP
+            text = place.environment[lod]
+            return [
+                LayerContribution(
+                    slot="LOCATION",
+                    source=target.background,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        if target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            text = place.environment[PlaceLOD.SOLO]
+            return [
+                LayerContribution(
+                    slot="LOCATION",
+                    source=target.place,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        if target.kind == "illustration":
+            assert target.location is not None
+            place = self._places.get(target.location)
+            lod = PlaceLOD.BACKDROP
+            parts: list[str] = []
+            if place.landmark[lod]:
+                parts.append(place.landmark[lod])
+            if place.environment[lod]:
+                parts.append(place.environment[lod])
+            text = ", ".join(parts)
+            return [
+                LayerContribution(
+                    slot="LOCATION",
+                    source=target.location,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            ]
+        return []

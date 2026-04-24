@@ -156,3 +156,51 @@ def test_casting_poi_uses_landmark(composer: PromptComposer) -> None:
     assert len(layers) == 1
     assert layers[0].source == "where:testworld/the_lookout"
     assert "watchtower" in layers[0].tokens
+
+
+def test_location_portrait_empty_when_no_background(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layers = composer._resolve_location(t)
+    assert layers == []
+
+
+def test_location_poi_uses_environment(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/the_lookout",
+    )
+    layers = composer._resolve_location(t)
+    assert len(layers) == 1
+    assert "upland" in layers[0].tokens
+
+
+def test_location_illustration_specific_uses_landmark_plus_environment(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_location(t)
+    combined = " ".join(layer.tokens for layer in layers)
+    assert "watchtower" in combined
+    assert "upland" in combined
+
+
+def test_location_illustration_archetypal_uses_environment_only(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="drinking",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_location(t)
+    combined = " ".join(layer.tokens for layer in layers)
+    assert "hearth" in combined
