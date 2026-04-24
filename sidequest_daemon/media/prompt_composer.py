@@ -14,6 +14,7 @@ from sidequest_daemon.media.catalogs import (
 )
 from sidequest_daemon.media.recipe_loader import RecipeLoader
 from sidequest_daemon.media.recipes import (
+    CameraPreset,
     ComposedPrompt,
     LayerContribution,
     LOD,
@@ -172,3 +173,48 @@ class PromptComposer:
                 ),
             ]
         return []
+
+    def _resolve_direction_action(
+        self, target: RenderTarget
+    ) -> LayerContribution:
+        if target.kind == "portrait":
+            assert target.character is not None
+            if target.pose_override:
+                text = target.pose_override
+                source = "inline"
+            else:
+                text = self._characters.get(target.character).default_pose
+                source = f"{target.character}.default_pose"
+        elif target.kind == "poi":
+            assert target.place is not None
+            place = self._places.get(target.place)
+            text = place.description[PlaceLOD.SOLO]
+            source = target.place
+        elif target.kind == "illustration":
+            text = target.action
+            source = "inline"
+        else:
+            text, source = "", "inline"
+        return LayerContribution(
+            slot="DIRECTION_ACTION",
+            source=source,
+            tokens=text,
+            estimated_tokens=_estimate_tokens(text),
+        )
+
+    def _resolve_direction_camera(
+        self, target: RenderTarget
+    ) -> LayerContribution:
+        recipe = self._recipes.get(target.kind)
+        if recipe.direction_camera == "{camera}":
+            assert target.camera is not None
+            preset = target.camera
+        else:
+            preset = CameraPreset(recipe.direction_camera)
+        spec = self._cameras.get(preset)
+        return LayerContribution(
+            slot="DIRECTION_CAMERA",
+            source=preset.value,
+            tokens=spec.prompt,
+            estimated_tokens=_estimate_tokens(spec.prompt),
+        )

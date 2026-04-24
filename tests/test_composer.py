@@ -204,3 +204,55 @@ def test_location_illustration_archetypal_uses_environment_only(
     layers = composer._resolve_location(t)
     combined = " ".join(layer.tokens for layer in layers)
     assert "hearth" in combined
+
+
+def test_portrait_direction_action_uses_default_pose(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layer = composer._resolve_direction_action(t)
+    assert "neutral expression" in layer.tokens
+
+
+def test_portrait_direction_action_honors_pose_override(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+        pose_override="turning sharply, accusing gesture",
+    )
+    layer = composer._resolve_direction_action(t)
+    assert "accusing" in layer.tokens
+
+
+def test_illustration_direction_action_is_inline(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arguing at the door",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    layer = composer._resolve_direction_action(t)
+    assert "arguing" in layer.tokens
+
+
+def test_portrait_camera_uses_recipe_default(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    layer = composer._resolve_direction_camera(t)
+    assert "three-quarter" in layer.tokens
+
+
+def test_illustration_camera_from_render_target(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="ambush",
+        location="where:testgenre/tavern", camera=CameraPreset.topdown_90,
+    )
+    layer = composer._resolve_direction_camera(t)
+    assert "top-down" in layer.tokens
