@@ -12,6 +12,7 @@ from sidequest_daemon.media.prompt_composer import PromptComposer
 from sidequest_daemon.media.recipe_loader import RecipeLoader
 from sidequest_daemon.media.recipes import (
     CameraPreset,
+    CatalogMissError,
     LOD,
     PlaceLOD,
     RenderTarget,
@@ -409,3 +410,22 @@ def test_budget_downgrade_participants_before_slot_eviction(
     # every participant slot (never drop below background).
     casting_sources = [lay.source for lay in result.layers if lay.slot == "CASTING"]
     assert len(casting_sources) == len(t.participants)
+
+
+def test_unknown_character_raises_catalog_miss(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:nobody",
+    )
+    with pytest.raises(CatalogMissError) as exc:
+        composer.compose(t)
+    assert exc.value.missing_id == "npc:nobody"
+
+
+def test_unknown_place_raises_catalog_miss(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/fabricated",
+    )
+    with pytest.raises(CatalogMissError):
+        composer.compose(t)
