@@ -350,3 +350,38 @@ def test_compose_seed_is_deterministic(composer: PromptComposer) -> None:
     b = composer.compose(t)
     assert a.seed == b.seed
     assert a.positive_prompt == b.positive_prompt
+
+
+def test_eviction_order_drops_location_flourish_first(
+    composer: PromptComposer,
+) -> None:
+    # Inject a deliberately oversized action to force eviction.
+    # Build a target that exceeds 512 tokens when every layer is full.
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="x " * 340,  # forces overflow
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    result = composer.compose(t)
+    # Location flourish should evict before any identity-floor slot.
+    assert any(
+        "LOCATION" in dl or "DIRECTION_ACTION" in dl
+        for dl in result.dropped_layers
+    )
+    assert not any("CASTING" in dl for dl in result.dropped_layers)
+
+
+def test_identity_floor_breach_raises_budget_error(
+    composer: PromptComposer,
+) -> None:
+    from sidequest_daemon.media.recipes import BudgetError  # noqa: PLC0415
+    # npc:verbose has a massive solo description (484+ tokens) that exceeds
+    # the identity floor even after all non-floor slots are evicted.
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:verbose"],
+        action="word " * 600,
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    with pytest.raises(BudgetError):
+        composer.compose(t)

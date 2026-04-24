@@ -15,6 +15,7 @@ from sidequest_daemon.media.catalogs import (
 )
 from sidequest_daemon.media.recipe_loader import RecipeLoader
 from sidequest_daemon.media.recipes import (
+    BudgetError,
     CameraPreset,
     ComposedPrompt,
     LayerContribution,
@@ -41,6 +42,22 @@ def _estimate_tokens(text: str) -> int:
 
 
 class PromptComposer:
+    # Eviction order (most-evictable → least). Identity floor is below.
+    _EVICTION_ORDER: list[tuple[str, int]] = [
+        # (slot_label, preserve_token_count)
+        ("LOCATION.flourish", 8),
+        ("DIRECTION_ACTION.flourish", 8),
+        ("ART_SENSIBILITY.WORLD", 0),       # drop entirely
+        ("ART_SENSIBILITY.CULTURE.flourish", 12),
+    ]
+
+    # Identity floor — never evict below these.
+    _IDENTITY_FLOOR: set[str] = {
+        "CASTING",
+        "DIRECTION_CAMERA",
+        "ART_SENSIBILITY.GENRE",
+    }
+
     def __init__(
         self,
         *,
@@ -58,21 +75,73 @@ class PromptComposer:
 
     def compose(self, target: RenderTarget) -> ComposedPrompt:
         layers = self._resolve_all_layers(target)
+        dropped: list[str] = []
+        warnings: list[str] = []
+
+        current_tokens = sum(lay.estimated_tokens for lay in layers)
+        if current_tokens > _TOKEN_LIMIT:
+            layers, dropped = self._apply_slot_eviction(layers)
+            current_tokens = sum(lay.estimated_tokens for lay in layers)
+            warnings.append(
+                f"token budget eviction applied: "
+                f"{current_tokens}/{_TOKEN_LIMIT}",
+            )
+
+        if current_tokens > _TOKEN_LIMIT:
+            raise BudgetError(
+                "identity floor breached",
+                breakdown={lay.slot: lay.estimated_tokens for lay in layers},
+            )
+
         positive = self._assemble(layers)
         clip = self._build_clip(layers)
         negative = self._build_negative(target)
-        worker = self._select_worker(target)
-        seed = self._derive_seed(target)
         return ComposedPrompt(
             positive_prompt=positive,
             clip_prompt=clip,
             negative_prompt=negative,
-            worker_type=worker,
-            seed=seed,
+            worker_type=self._select_worker(target),
+            seed=self._derive_seed(target),
             layers=layers,
-            dropped_layers=[],
-            warnings=[],
+            dropped_layers=dropped,
+            warnings=warnings,
         )
+
+    def _apply_slot_eviction(
+        self, layers: list[LayerContribution]
+    ) -> tuple[list[LayerContribution], list[str]]:
+        result = [lay.model_copy() for lay in layers]
+        dropped: list[str] = []
+
+        def _truncate(layer: LayerContribution, keep_tokens: int) -> None:
+            words = layer.tokens.split()
+            keep_words = max(1, int(keep_tokens / _TOKENS_PER_WORD))
+            layer.tokens = " ".join(words[:keep_words])
+            layer.estimated_tokens = _estimate_tokens(layer.tokens)
+
+        for eviction_label, preserve in self._EVICTION_ORDER:
+            if sum(lay.estimated_tokens for lay in result) <= _TOKEN_LIMIT:
+                break
+
+            base_slot, _, flourish = eviction_label.partition(".")
+            if flourish == "flourish":
+                for layer in result:
+                    if layer.slot == base_slot or layer.slot.startswith(
+                        base_slot + "."
+                    ):
+                        if layer.estimated_tokens > preserve:
+                            _truncate(layer, preserve)
+                            dropped.append(
+                                f"{layer.slot}:{layer.source}:flourish",
+                            )
+            else:
+                # Drop entirely
+                before = len(result)
+                result = [lay for lay in result if lay.slot != eviction_label]
+                if len(result) < before:
+                    dropped.append(eviction_label)
+
+        return result, dropped
 
     def _character_lod_plan(self, target: RenderTarget) -> dict[str, LOD]:
         if target.kind == "portrait":
