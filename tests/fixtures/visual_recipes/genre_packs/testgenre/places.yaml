@@ -1,0 +1,10 @@
+tavern:
+  landmark:
+    solo: ""
+    backdrop: ""
+  environment:
+    solo: "wooden beams, hearth fire, lamp-lit interior"
+    backdrop: "wooden beams, hearth fire"
+  description:
+    solo: "a tavern common room"
+    backdrop: "a tavern"

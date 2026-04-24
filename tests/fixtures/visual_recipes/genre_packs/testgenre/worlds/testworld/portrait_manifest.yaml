@@ -1,0 +1,19 @@
+characters:
+  - id: rux
+    type: npc_major
+    culture: ironhand
+    descriptions:
+      solo: "a tall gaunt inquisitor in grey wool cassock, iron-chased buttons, silver device at throat, scar across left cheekbone, hands callused"
+      long: "gaunt inquisitor in grey wool, iron buttons, silver throat device, scar on left cheek"
+      short: "a gaunt inquisitor in grey wool"
+      background: "an inquisitor"
+    default_pose: "standing, hands folded, neutral expression"
+  - id: mira
+    type: npc_supporting
+    culture: ironhand
+    descriptions:
+      solo: "a young woman in leather traveling gear, short chestnut hair, green eyes, quick smile, longbow slung across her back"
+      long: "woman in leather gear, chestnut hair, longbow"
+      short: "a woman with a longbow"
+      background: "a traveler"
+    default_pose: "relaxed, hand on bow"
