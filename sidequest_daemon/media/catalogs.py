@@ -175,3 +175,69 @@ class PlaceCatalog:
         if ref not in self._entries:
             raise CatalogMissError(source="PlaceCatalog", missing_id=ref)
         return self._entries[ref]
+
+
+class StyleCatalog:
+    def __init__(
+        self,
+        genre_tokens: dict[str, str],
+        world_tokens: dict[tuple[str, str], str],
+        culture_tokens: dict[tuple[str, str, str], str],
+    ) -> None:
+        self._genre = genre_tokens
+        self._world = world_tokens
+        self._culture = culture_tokens
+
+    @classmethod
+    def load(
+        cls,
+        genre_packs_root: Path,
+        *,
+        genre: str,
+        world: str,
+    ) -> "StyleCatalog":
+        genre_tokens: dict[str, str] = {}
+        world_tokens: dict[tuple[str, str], str] = {}
+        culture_tokens: dict[tuple[str, str, str], str] = {}
+
+        # Genre style
+        genre_style = genre_packs_root / genre / "visual_style.yaml"
+        if genre_style.exists():
+            data = yaml.safe_load(genre_style.read_text()) or {}
+            genre_tokens[genre] = data.get("positive_suffix", "")
+
+        # World style
+        world_style = (
+            genre_packs_root / genre / "worlds" / world / "visual_style.yaml"
+        )
+        if world_style.exists():
+            data = yaml.safe_load(world_style.read_text()) or {}
+            world_tokens[(genre, world)] = data.get("positive_suffix", "")
+
+        # Cultures (world-scoped — per spec)
+        cultures_dir = genre_packs_root / genre / "worlds" / world / "cultures"
+        if cultures_dir.is_dir():
+            for culture_file in cultures_dir.glob("*.yaml"):
+                data = yaml.safe_load(culture_file.read_text()) or {}
+                slug = culture_file.stem
+                culture_tokens[(genre, world, slug)] = data.get("visual_tokens", "")
+
+        return cls(genre_tokens, world_tokens, culture_tokens)
+
+    def get_genre(self, genre: str) -> str:
+        if genre not in self._genre:
+            raise CatalogMissError(source="StyleCatalog.genre", missing_id=genre)
+        return self._genre[genre]
+
+    def get_world(self, genre: str, world: str) -> str:
+        # Absent world style is a skip-layer signal, not an error.
+        return self._world.get((genre, world), "")
+
+    def get_culture(self, genre: str, world: str, culture: str) -> str:
+        key = (genre, world, culture)
+        if key not in self._culture:
+            raise CatalogMissError(
+                source="StyleCatalog.culture",
+                missing_id=f"{genre}/{world}/{culture}",
+            )
+        return self._culture[key]

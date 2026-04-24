@@ -7,6 +7,7 @@ from sidequest_daemon.media.catalogs import (
     CharacterTokens,
     PlaceCatalog,
     PlaceTokens,
+    StyleCatalog,
 )
 from sidequest_daemon.media.recipes import LOD, CatalogMissError, PlaceLOD
 
@@ -93,3 +94,33 @@ def test_poi_kind_guard_rejects_archetypal_key():
     archetypal = cat.get("where:testgenre/tavern")
     assert specific.kind == "specific"
     assert archetypal.kind == "archetypal"
+
+
+def test_loads_genre_style():
+    cat = StyleCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld")
+    tokens = cat.get_genre("testgenre")
+    assert "painterly" in tokens
+
+
+def test_loads_world_style():
+    cat = StyleCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld")
+    tokens = cat.get_world("testgenre", "testworld")
+    assert "amber" in tokens
+
+
+def test_absent_world_style_returns_empty():
+    cat = StyleCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld")
+    tokens = cat.get_world("testgenre", "no_such_world")
+    assert tokens == ""
+
+
+def test_culture_tokens_loaded():
+    cat = StyleCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld")
+    tokens = cat.get_culture("testgenre", "testworld", "ironhand")
+    assert "iron-chased" in tokens
+
+
+def test_unknown_culture_raises():
+    cat = StyleCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld")
+    with pytest.raises(CatalogMissError):
+        cat.get_culture("testgenre", "testworld", "nonexistent")
