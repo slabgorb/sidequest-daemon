@@ -452,3 +452,69 @@ def test_compose_emits_otel_span(composer: PromptComposer, monkeypatch) -> None:
     assert span["payload"]["world"] == "testworld"
     assert "layers" in span["payload"]
     assert any(layer["slot"] == "CASTING" for layer in span["payload"]["layers"])
+
+
+GOLDEN_DIR = Path(__file__).parent / "golden"
+
+
+def _assert_golden(name: str, actual: str) -> None:
+    golden_path = GOLDEN_DIR / name
+    if not golden_path.exists():
+        GOLDEN_DIR.mkdir(exist_ok=True)
+        golden_path.write_text(actual)
+        pytest.fail(f"Wrote new golden {name}; inspect and re-run.")
+    expected = golden_path.read_text()
+    assert actual == expected, f"Golden mismatch for {name}. "\
+        f"Delete {golden_path} and re-run to regenerate."
+
+
+def test_golden_portrait(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    _assert_golden("portrait_npc_rux.txt", composer.compose(t).positive_prompt + "\n")
+
+
+def test_golden_poi(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="poi", world="testworld", genre="testgenre",
+        place="where:testworld/the_lookout",
+    )
+    _assert_golden("poi_the_lookout.txt", composer.compose(t).positive_prompt + "\n")
+
+
+def test_golden_illustration_specific(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving at dusk",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    _assert_golden(
+        "illustration_specific_location.txt",
+        composer.compose(t).positive_prompt + "\n",
+    )
+
+
+def test_golden_illustration_archetypal(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="drinking",
+        location="where:testgenre/tavern", camera=CameraPreset.scene,
+    )
+    _assert_golden(
+        "illustration_archetypal_location.txt",
+        composer.compose(t).positive_prompt + "\n",
+    )
+
+
+def test_golden_illustration_topdown(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="ambush from the doorway",
+        location="where:testworld/the_lookout", camera=CameraPreset.topdown_90,
+    )
+    _assert_golden(
+        "illustration_topdown_90.txt",
+        composer.compose(t).positive_prompt + "\n",
+    )
