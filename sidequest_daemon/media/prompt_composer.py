@@ -58,6 +58,9 @@ class PromptComposer:
         "ART_SENSIBILITY.GENRE",
     }
 
+    # LOD degradation ladder — ordered from richest to most minimal.
+    _LOD_ORDER = [LOD.SOLO, LOD.LONG, LOD.SHORT, LOD.BACKGROUND]
+
     def __init__(
         self,
         *,
@@ -74,20 +77,27 @@ class PromptComposer:
         self._styles = styles
 
     def compose(self, target: RenderTarget) -> ComposedPrompt:
-        layers = self._resolve_all_layers(target)
+        plan = self._character_lod_plan(target)
+        layers = self._resolve_all_layers_with_plan(target, plan)
         dropped: list[str] = []
         warnings: list[str] = []
 
-        current_tokens = sum(lay.estimated_tokens for lay in layers)
-        if current_tokens > _TOKEN_LIMIT:
+        # 1. Participant LOD downgrade (preserves presence of every participant).
+        while sum(lay.estimated_tokens for lay in layers) > _TOKEN_LIMIT:
+            downgraded = self._downgrade_one_participant(plan)
+            if not downgraded:
+                break
+            layers = self._resolve_all_layers_with_plan(target, plan)
+
+        # 2. Slot-level eviction.
+        if sum(lay.estimated_tokens for lay in layers) > _TOKEN_LIMIT:
             layers, dropped = self._apply_slot_eviction(layers)
-            current_tokens = sum(lay.estimated_tokens for lay in layers)
             warnings.append(
                 f"token budget eviction applied: "
-                f"{current_tokens}/{_TOKEN_LIMIT}",
+                f"{sum(lay.estimated_tokens for lay in layers)}/{_TOKEN_LIMIT}",
             )
 
-        if current_tokens > _TOKEN_LIMIT:
+        if sum(lay.estimated_tokens for lay in layers) > _TOKEN_LIMIT:
             raise BudgetError(
                 "identity floor breached",
                 breakdown={lay.slot: lay.estimated_tokens for lay in layers},
@@ -106,6 +116,62 @@ class PromptComposer:
             dropped_layers=dropped,
             warnings=warnings,
         )
+
+    def _downgrade_one_participant(self, plan: dict[str, LOD]) -> bool:
+        """Downgrade the lowest-priority participant one LOD rung. Returns True
+        if a downgrade was applied, False if every participant is already at
+        background."""
+        # Operate in reverse order so tail participants downgrade first.
+        for ref in reversed(list(plan.keys())):
+            current = plan[ref]
+            idx = self._LOD_ORDER.index(current)
+            if idx < len(self._LOD_ORDER) - 1:
+                plan[ref] = self._LOD_ORDER[idx + 1]
+                return True
+        return False
+
+    def _resolve_all_layers_with_plan(
+        self, target: RenderTarget, plan: dict[str, LOD]
+    ) -> list[LayerContribution]:
+        art = self._resolve_art_sensibility(target)
+        casting = self._resolve_casting_with_plan(target, plan)
+        location = self._resolve_location(target)
+        action = [self._resolve_direction_action(target)]
+        camera = [self._resolve_direction_camera(target)]
+
+        # Split art sensibility: GENRE/WORLD go early, CULTURE goes late.
+        genre_world = [
+            layer for layer in art
+            if layer.slot in ("ART_SENSIBILITY.GENRE", "ART_SENSIBILITY.WORLD")
+        ]
+        culture = [layer for layer in art if layer.slot == "ART_SENSIBILITY.CULTURE"]
+
+        return genre_world + casting + location + action + camera + culture
+
+    def _resolve_casting_with_plan(
+        self, target: RenderTarget, plan: dict[str, LOD]
+    ) -> list[LayerContribution]:
+        if target.kind == "poi":
+            return self._resolve_casting(target)
+        layers: list[LayerContribution] = []
+        refs: list[str] = (
+            [target.character]
+            if target.kind == "portrait" and target.character
+            else list(target.participants)
+        )
+        for ref in refs:
+            lod = plan.get(ref, LOD.SOLO)
+            tokens = self._characters.get(ref)
+            text = tokens.descriptions[lod]
+            layers.append(
+                LayerContribution(
+                    slot="CASTING",
+                    source=ref,
+                    tokens=text,
+                    estimated_tokens=_estimate_tokens(text),
+                ),
+            )
+        return layers
 
     def _apply_slot_eviction(
         self, layers: list[LayerContribution]
@@ -366,21 +432,6 @@ class PromptComposer:
             if c and c not in seen:
                 seen.append(c)
         return seen
-
-    def _resolve_all_layers(
-        self, target: RenderTarget
-    ) -> list[LayerContribution]:
-        art = self._resolve_art_sensibility(target)
-        casting = self._resolve_casting(target)
-        location = self._resolve_location(target)
-        action = [self._resolve_direction_action(target)]
-        camera = [self._resolve_direction_camera(target)]
-
-        # Split art sensibility: GENRE/WORLD go early, CULTURE goes late.
-        genre_world = [layer for layer in art if layer.slot in ("ART_SENSIBILITY.GENRE", "ART_SENSIBILITY.WORLD")]
-        culture = [layer for layer in art if layer.slot == "ART_SENSIBILITY.CULTURE"]
-
-        return genre_world + casting + location + action + camera + culture
 
     def _assemble(self, layers: list[LayerContribution]) -> str:
         # Order: GENRE, WORLD, CASTING, LOCATION, DIRECTION_ACTION,

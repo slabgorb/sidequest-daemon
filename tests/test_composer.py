@@ -359,7 +359,7 @@ def test_eviction_order_drops_location_flourish_first(
     # Build a target that exceeds 512 tokens when every layer is full.
     t = RenderTarget(
         kind="illustration", world="testworld", genre="testgenre",
-        participants=["npc:rux"], action="x " * 340,  # forces overflow
+        participants=["npc:rux"], action="x " * 360,  # forces overflow past background LOD
         location="where:testworld/the_lookout", camera=CameraPreset.scene,
     )
     result = composer.compose(t)
@@ -385,3 +385,27 @@ def test_identity_floor_breach_raises_budget_error(
     )
     with pytest.raises(BudgetError):
         composer.compose(t)
+
+
+def test_budget_downgrade_participants_before_slot_eviction(
+    composer: PromptComposer,
+) -> None:
+    # Six participants + rich culture/environment — forces downgrade
+    # from planned LODs toward `background` for tail participants.
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=[
+            "npc:rux", "npc:mira",
+            # Reuse existing two characters; participant duplication is OK
+            # because LOD downgrade operates on ordinal position not identity.
+            "npc:rux", "npc:mira", "npc:rux", "npc:mira",
+        ],
+        action="argument " * 50,
+        location="where:testworld/the_lookout",
+        camera=CameraPreset.scene,
+    )
+    result = composer.compose(t)
+    # Even under budget pressure, at least one CASTING layer survives for
+    # every participant slot (never drop below background).
+    casting_sources = [lay.source for lay in result.layers if lay.slot == "CASTING"]
+    assert len(casting_sources) == len(t.participants)
