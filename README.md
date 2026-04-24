@@ -163,3 +163,7 @@ pytest tests/test_daemon_smoke.py -v
 ## Origin
 
 Lifted from [sq-2](https://github.com/slabgorb/sq-2) (the original Python SideQuest codebase) as part of the Rust rewrite. The daemon code was already cleanly separated behind a Unix socket boundary — this repo extracts it into a standalone package.
+
+## Training pipeline
+
+See `docs/training.md` for `sidequest-train` usage (ADR-073 Phase 3).
