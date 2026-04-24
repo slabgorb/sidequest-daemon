@@ -120,3 +120,33 @@ class RenderTarget(BaseModel):
             if self.camera is None:
                 raise ValueError("illustration targets require `camera`")
         return self
+
+
+class Recipe(BaseModel):
+    """A canonical recipe — names the source bindings for each slot."""
+
+    kind: Literal["portrait", "poi", "illustration"]
+    casting: str
+    location: str
+    direction_action: str
+    direction_camera: str  # a CameraPreset member name, or "{camera}" to
+                           # pull from RenderTarget.camera
+    art_sensibility: list[str]  # ordered cascade: e.g. ["GENRE","WORLD","CULTURE"]
+
+
+class LayerContribution(BaseModel):
+    slot: str
+    source: str
+    tokens: str
+    estimated_tokens: int
+
+
+class ComposedPrompt(BaseModel):
+    positive_prompt: str
+    clip_prompt: str
+    negative_prompt: str
+    worker_type: str
+    seed: int
+    layers: list[LayerContribution]
+    dropped_layers: list[str]
+    warnings: list[str]

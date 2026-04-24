@@ -3,8 +3,11 @@ from pydantic import ValidationError
 
 from sidequest_daemon.media.recipes import (
     CameraPreset,
+    ComposedPrompt,
+    LayerContribution,
     LOD,
     PlaceLOD,
+    Recipe,
     RenderTarget,
     Slot,
 )
@@ -122,3 +125,40 @@ def test_portrait_default_camera_is_portrait_3q():
         character="npc:rux",
     )
     assert target.camera is None  # recipe supplies default — see Task 7
+
+
+def test_recipe_has_slot_bindings():
+    r = Recipe(
+        kind="portrait",
+        casting="character",
+        location="background",
+        direction_action="pose",
+        direction_camera="portrait_3q",
+        art_sensibility=["GENRE", "WORLD", "CULTURE"],
+    )
+    assert r.direction_camera == "portrait_3q"
+    assert r.art_sensibility == ["GENRE", "WORLD", "CULTURE"]
+
+
+def test_layer_contribution_roundtrip():
+    lc = LayerContribution(
+        slot="CASTING",
+        source="npc:rux",
+        tokens="a gaunt inquisitor...",
+        estimated_tokens=11,
+    )
+    assert lc.source == "npc:rux"
+
+
+def test_composed_prompt_carries_layers_and_warnings():
+    cp = ComposedPrompt(
+        positive_prompt="...",
+        clip_prompt="...",
+        negative_prompt="...",
+        worker_type="zimage",
+        seed=0,
+        layers=[],
+        dropped_layers=[],
+        warnings=[],
+    )
+    assert cp.dropped_layers == []
