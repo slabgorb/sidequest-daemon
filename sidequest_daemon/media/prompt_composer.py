@@ -4,6 +4,7 @@ docs/superpowers/specs/2026-04-24-explicit-visual-recipes-design.md
 
 from __future__ import annotations
 
+import hashlib
 import logging
 
 from sidequest_daemon.media.camera_specs import CameraLoader
@@ -56,7 +57,22 @@ class PromptComposer:
         self._styles = styles
 
     def compose(self, target: RenderTarget) -> ComposedPrompt:
-        raise NotImplementedError  # filled in by subsequent tasks
+        layers = self._resolve_all_layers(target)
+        positive = self._assemble(layers)
+        clip = self._build_clip(layers)
+        negative = self._build_negative(target)
+        worker = self._select_worker(target)
+        seed = self._derive_seed(target)
+        return ComposedPrompt(
+            positive_prompt=positive,
+            clip_prompt=clip,
+            negative_prompt=negative,
+            worker_type=worker,
+            seed=seed,
+            layers=layers,
+            dropped_layers=[],
+            warnings=[],
+        )
 
     def _character_lod_plan(self, target: RenderTarget) -> dict[str, LOD]:
         if target.kind == "portrait":
@@ -281,3 +297,86 @@ class PromptComposer:
             if c and c not in seen:
                 seen.append(c)
         return seen
+
+    def _resolve_all_layers(
+        self, target: RenderTarget
+    ) -> list[LayerContribution]:
+        art = self._resolve_art_sensibility(target)
+        casting = self._resolve_casting(target)
+        location = self._resolve_location(target)
+        action = [self._resolve_direction_action(target)]
+        camera = [self._resolve_direction_camera(target)]
+
+        # Split art sensibility: GENRE/WORLD go early, CULTURE goes late.
+        genre_world = [layer for layer in art if layer.slot in ("ART_SENSIBILITY.GENRE", "ART_SENSIBILITY.WORLD")]
+        culture = [layer for layer in art if layer.slot == "ART_SENSIBILITY.CULTURE"]
+
+        return genre_world + casting + location + action + camera + culture
+
+    def _assemble(self, layers: list[LayerContribution]) -> str:
+        # Order: GENRE, WORLD, CASTING, LOCATION, DIRECTION_ACTION,
+        # DIRECTION_CAMERA, CULTURE, safety clause.
+        by_slot: dict[str, list[str]] = {}
+        for layer in layers:
+            if layer.tokens:
+                by_slot.setdefault(layer.slot, []).append(layer.tokens)
+
+        ordered: list[str] = []
+        for slot in (
+            "ART_SENSIBILITY.GENRE",
+            "ART_SENSIBILITY.WORLD",
+            "CASTING",
+            "LOCATION",
+            "DIRECTION_ACTION",
+            "DIRECTION_CAMERA",
+            "ART_SENSIBILITY.CULTURE",
+        ):
+            if slot in by_slot:
+                ordered.extend(by_slot[slot])
+
+        ordered.append(_HOUSE_SAFETY_CLAUSE)
+        return ", ".join(ordered)
+
+    def _build_clip(self, layers: list[LayerContribution]) -> str:
+        # CLIP gets short style-adjacent keywords — GENRE + CAMERA.
+        parts: list[str] = []
+        for layer in layers:
+            if layer.slot in ("ART_SENSIBILITY.GENRE", "DIRECTION_CAMERA"):
+                parts.append(layer.tokens)
+        return ", ".join(parts)
+
+    def _build_negative(self, target: RenderTarget) -> str:
+        # Preserve base + tier-specific negatives that used to hang on
+        # TACTICAL_SKETCH / SCENE_ILLUSTRATION.
+        parts = [_BASE_NEGATIVES]
+        if (
+            target.kind == "illustration"
+            and target.camera
+            and target.camera.value == "topdown_90"
+        ):
+            parts.append(
+                "illegible text, blurry labels, overlapping tokens, "
+                "3D perspective, realistic rendering",
+            )
+        return ", ".join(parts)
+
+    def _select_worker(self, target: RenderTarget) -> str:  # noqa: ARG002
+        # For now, all renders target the zimage worker. Style.preferred_model
+        # override can be re-introduced once PR lands — tracked in Task 25.
+        return "zimage"
+
+    def _derive_seed(self, target: RenderTarget) -> int:
+        key_parts: list[str] = [target.kind, target.world, target.genre]
+        if target.character:
+            key_parts.append(target.character)
+        if target.place:
+            key_parts.append(target.place)
+        if target.location:
+            key_parts.append(target.location)
+        key_parts.extend(sorted(target.participants))
+        key_parts.append(target.action)
+        if target.camera:
+            key_parts.append(target.camera.value)
+        key = ":".join(key_parts)
+        digest = hashlib.sha256(key.encode()).hexdigest()
+        return int(digest[:8], 16) % (2**32)

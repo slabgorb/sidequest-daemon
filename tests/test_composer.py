@@ -297,3 +297,56 @@ def test_cascade_illustration_merges_multiple_cultures(
     # Rux and Mira share `ironhand`; dedupe produces one culture layer.
     assert len(culture_layers) == 1
     assert "iron-chased" in culture_layers[0].tokens
+
+
+def test_compose_portrait_assembles_in_order(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    result = composer.compose(t)
+    # Assembly order per spec:
+    # GENRE, WORLD, CASTING, LOCATION, DIRECTION_ACTION, DIRECTION_CAMERA,
+    # CULTURE, safety clause.
+    genre_idx = result.positive_prompt.find("painterly")
+    casting_idx = result.positive_prompt.find("inquisitor")
+    camera_idx = result.positive_prompt.find("three-quarter")
+    culture_idx = result.positive_prompt.find("monastic severity")
+    safety_idx = result.positive_prompt.find("solo character focus")
+    assert 0 <= genre_idx < casting_idx < camera_idx < culture_idx < safety_idx
+
+
+def test_compose_illustration_specific_location_contains_landmark(
+    composer: PromptComposer,
+) -> None:
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    result = composer.compose(t)
+    assert "watchtower" in result.positive_prompt
+    assert "arriving" in result.positive_prompt
+
+
+def test_compose_populates_layers_list(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    result = composer.compose(t)
+    slots = {layer.slot for layer in result.layers}
+    assert "CASTING" in slots
+    assert "DIRECTION_CAMERA" in slots
+    assert "ART_SENSIBILITY.GENRE" in slots
+
+
+def test_compose_seed_is_deterministic(composer: PromptComposer) -> None:
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    a = composer.compose(t)
+    b = composer.compose(t)
+    assert a.seed == b.seed
+    assert a.positive_prompt == b.positive_prompt
