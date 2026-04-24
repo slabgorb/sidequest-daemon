@@ -518,6 +518,13 @@ async def _run_daemon(
 
     if genre_packs is not None:
         os.environ["SIDEQUEST_GENRE_PACKS"] = str(genre_packs)
+
+    # Validate daemon configuration at startup — fail loud on invalid recipes/cameras
+    _daemon_root = Path(__file__).resolve().parents[2]  # sidequest-daemon/
+    validate_startup_config(
+        recipes_path=_daemon_root / "recipes.yaml",
+        cameras_path=_daemon_root / "cameras.yaml",
+    )
     pool = WorkerPool(output_dir)
     render_lock = asyncio.Lock()
     # Story 37-23: embed gets its own lock. Flux runs on MPS (render_lock);
@@ -676,6 +683,17 @@ def main() -> None:
             output_dir=output_dir,
             genre_packs=genre_packs,
         ))
+
+
+def validate_startup_config(
+    *, recipes_path: Path, cameras_path: Path
+) -> None:
+    """Fail-loud validation of recipe + camera YAML at daemon boot."""
+    from sidequest_daemon.media.camera_specs import CameraLoader
+    from sidequest_daemon.media.recipe_loader import RecipeLoader
+
+    CameraLoader.from_file(cameras_path)
+    RecipeLoader.from_file(recipes_path)
 
 
 if __name__ == "__main__":
