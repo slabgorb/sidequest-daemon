@@ -1,0 +1,26 @@
+# sidequest-daemon/recipes.yaml
+# The three canonical recipes. Each names the source binding per slot.
+
+portrait:
+  kind: portrait
+  casting: character
+  location: background
+  direction_action: pose
+  direction_camera: portrait_3q
+  art_sensibility: [GENRE, WORLD, CULTURE]
+
+poi:
+  kind: poi
+  casting: landmark
+  location: environment
+  direction_action: description
+  direction_camera: wide_establishing
+  art_sensibility: [GENRE, WORLD, CULTURE]
+
+illustration:
+  kind: illustration
+  casting: participants
+  location: poi_location
+  direction_action: action
+  direction_camera: "{camera}"
+  art_sensibility: [GENRE, WORLD, CULTURE]
