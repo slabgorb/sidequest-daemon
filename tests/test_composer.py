@@ -21,9 +21,15 @@ def composer() -> PromptComposer:
     return PromptComposer(
         recipes=RecipeLoader.from_file(REPO_ROOT / "recipes.yaml"),
         cameras=CameraLoader.from_file(REPO_ROOT / "cameras.yaml"),
-        characters=CharacterCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld"),
-        places=PlaceCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld"),
-        styles=StyleCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld"),
+        characters=CharacterCatalog.load(
+            FIXTURE_ROOT, genre="testgenre", world="testworld"
+        ),
+        places=PlaceCatalog.load(
+            FIXTURE_ROOT, genre="testgenre", world="testworld"
+        ),
+        styles=StyleCatalog.load(
+            FIXTURE_ROOT, genre="testgenre", world="testworld"
+        ),
     )
 
 

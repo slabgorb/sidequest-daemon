@@ -15,6 +15,8 @@ from sidequest_daemon.media.catalogs import (
 from sidequest_daemon.media.recipe_loader import RecipeLoader
 from sidequest_daemon.media.recipes import (
     ComposedPrompt,
+    LOD,
+    PlaceLOD,
     RenderTarget,
 )
 
@@ -53,3 +55,37 @@ class PromptComposer:
 
     def compose(self, target: RenderTarget) -> ComposedPrompt:
         raise NotImplementedError  # filled in by subsequent tasks
+
+    def _character_lod_plan(self, target: RenderTarget) -> dict[str, LOD]:
+        if target.kind == "portrait":
+            assert target.character is not None
+            return {target.character: LOD.SOLO}
+        if target.kind == "illustration":
+            participants = list(target.participants)
+            n = len(participants)
+            if n == 1:
+                return {participants[0]: LOD.SOLO}
+            if n == 2:
+                return {p: LOD.LONG for p in participants}
+            if 3 <= n <= 4:
+                return {
+                    **{participants[0]: LOD.LONG},
+                    **{p: LOD.SHORT for p in participants[1:]},
+                }
+            # n >= 5
+            return {
+                participants[0]: LOD.LONG,
+                participants[1]: LOD.SHORT,
+                participants[2]: LOD.SHORT,
+                **{p: LOD.BACKGROUND for p in participants[3:]},
+            }
+        return {}  # POI targets have no character plan
+
+    def _place_lod_for(self, target: RenderTarget) -> PlaceLOD:
+        if target.kind == "poi":
+            return PlaceLOD.SOLO
+        if target.kind == "illustration":
+            return PlaceLOD.BACKDROP
+        if target.kind == "portrait" and target.background:
+            return PlaceLOD.BACKDROP
+        return PlaceLOD.SOLO  # unreachable for current targets, safe default
