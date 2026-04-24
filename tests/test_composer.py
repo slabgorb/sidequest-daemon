@@ -429,3 +429,26 @@ def test_unknown_place_raises_catalog_miss(composer: PromptComposer) -> None:
     )
     with pytest.raises(CatalogMissError):
         composer.compose(t)
+
+
+def test_compose_emits_otel_span(composer: PromptComposer, monkeypatch) -> None:
+    emitted: list[dict] = []
+
+    def fake_emit(name: str, payload: dict) -> None:
+        emitted.append({"name": name, "payload": payload})
+
+    monkeypatch.setattr(
+        "sidequest_daemon.media.prompt_composer._emit_watcher_event",
+        fake_emit,
+    )
+    t = RenderTarget(
+        kind="portrait", world="testworld", genre="testgenre",
+        character="npc:rux",
+    )
+    composer.compose(t)
+    assert any(e["name"] == "render.prompt_composed" for e in emitted)
+    span = next(e for e in emitted if e["name"] == "render.prompt_composed")
+    assert span["payload"]["kind"] == "portrait"
+    assert span["payload"]["world"] == "testworld"
+    assert "layers" in span["payload"]
+    assert any(layer["slot"] == "CASTING" for layer in span["payload"]["layers"])

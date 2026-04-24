@@ -26,6 +26,13 @@ from sidequest_daemon.media.recipes import (
 
 log = logging.getLogger(__name__)
 
+try:
+    from sidequest_daemon.telemetry import emit_watcher_event as _emit_watcher_event
+except ImportError:
+    # Stand-in when telemetry is not wired; the real module must exist in prod.
+    def _emit_watcher_event(name: str, payload: dict) -> None:
+        log.debug("otel (unwired): %s %s", name, payload)
+
 _TOKEN_LIMIT = 512
 _TOKENS_PER_WORD = 1.3
 _BASE_NEGATIVES = (
@@ -106,6 +113,29 @@ class PromptComposer:
         positive = self._assemble(layers)
         clip = self._build_clip(layers)
         negative = self._build_negative(target)
+
+        _emit_watcher_event(
+            "render.prompt_composed",
+            {
+                "kind": target.kind,
+                "world": target.world,
+                "genre": target.genre,
+                "total_estimated_tokens": sum(
+                    layer.estimated_tokens for layer in layers
+                ),
+                "layers": [
+                    {
+                        "slot": layer.slot,
+                        "source": layer.source,
+                        "estimated_tokens": layer.estimated_tokens,
+                    }
+                    for layer in layers
+                ],
+                "dropped_layers": dropped,
+                "warnings": warnings,
+            },
+        )
+
         return ComposedPrompt(
             positive_prompt=positive,
             clip_prompt=clip,
