@@ -30,7 +30,6 @@ class ZImageMLXWorker:
         "landscape":          {"steps": 20, "guidance": 4.0, "w": 1024, "h": 768},
         "text_overlay":       {"steps": 20, "guidance": 4.0, "w": 768,  "h": 512},
         "cartography":        {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
-        "tactical_sketch":    {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
         "fog_of_war":         {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
     }
 

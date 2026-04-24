@@ -22,9 +22,6 @@ class ZImageTierConfig:
 
 
 ZIMAGE_TIER_CONFIGS: dict[RenderTier, ZImageTierConfig] = {
-    RenderTier.TACTICAL_SKETCH: ZImageTierConfig(
-        steps=20, guidance=4.0, width=1024, height=1024,
-    ),
     RenderTier.SCENE_ILLUSTRATION: ZImageTierConfig(
         steps=20, guidance=4.0, width=1024, height=768,
     ),

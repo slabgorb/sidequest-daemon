@@ -48,7 +48,6 @@ IMAGE_TIERS = frozenset(
         "landscape",
         "cartography",
         "text_overlay",
-        "tactical_sketch",
         "fog_of_war",
     }
 )
