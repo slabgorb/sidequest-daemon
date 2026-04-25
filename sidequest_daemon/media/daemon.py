@@ -610,6 +610,27 @@ async def _run_daemon(
         )
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Publish the actually-used output_dir to a known handshake location so
+    # the server can discover it without needing SIDEQUEST_OUTPUT_DIR set in
+    # its own environment. Without this, the dev-default flow (no env var,
+    # daemon picks `tempfile.mkdtemp(prefix="sq-daemon-")`) hands the server
+    # a tmpdir it has no way of knowing about — every render lands in the
+    # daemon's tmpdir but the server's `_render_url_from_path` falls through
+    # to the verbatim path, the UI 404s, and the player sees no images.
+    # Playtest 2026-04-25 [P1].
+    try:
+        handshake_dir = Path.home() / ".sidequest"
+        handshake_dir.mkdir(parents=True, exist_ok=True)
+        handshake_file = handshake_dir / "daemon-output-dir"
+        handshake_file.write_text(f"{output_dir.resolve()}\n")
+    except OSError:
+        # Non-fatal: server falls back to the env var path. Logged so the
+        # GM panel / dev shell can spot the discovery hole.
+        import logging as _logging
+        _logging.getLogger(__name__).warning(
+            "daemon.handshake_write_failed dir=%s", handshake_dir,
+        )
+
     if genre_packs is not None:
         os.environ["SIDEQUEST_GENRE_PACKS"] = str(genre_packs)
 
