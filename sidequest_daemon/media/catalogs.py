@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 from typing import Literal
 
@@ -16,6 +17,13 @@ from sidequest_daemon.media.recipes import (
 )
 
 log = logging.getLogger(__name__)
+
+
+def _slugify_name(name: str) -> str:
+    """Lowercase, collapse whitespace to `_`, drop punctuation except `_`/`-`."""
+    lowered = name.strip().lower()
+    collapsed = re.sub(r"\s+", "_", lowered)
+    return re.sub(r"[^a-z0-9_-]", "", collapsed)
 
 
 class CharacterTokens(BaseModel):
@@ -44,13 +52,38 @@ class CharacterCatalog:
         data = yaml.safe_load(path.read_text())
         entries: dict[str, CharacterTokens] = {}
         for raw in data.get("characters", []):
-            slug = raw["id"]
-            descriptions = {LOD(k): v for k, v in raw.get("descriptions", {}).items()}
-            if set(descriptions) != set(LOD):
-                missing = set(LOD) - set(descriptions)
-                raise ValueError(
-                    f"character {slug!r} missing LODs: {sorted(m.value for m in missing)}",
-                )
+            # Production manifests use flat `name` + `appearance`; the
+            # synthetic test schema uses `id` + LOD-keyed `descriptions`.
+            # Accept both and fail loud only when neither shape is honored.
+            slug = raw.get("id")
+            if not slug:
+                name = raw.get("name")
+                if not name:
+                    raise ValueError(
+                        f"character entry in {path}: missing both `id` and `name`",
+                    )
+                slug = _slugify_name(name)
+
+            descriptions_raw = raw.get("descriptions")
+            if descriptions_raw:
+                descriptions = {LOD(k): v for k, v in descriptions_raw.items()}
+                if set(descriptions) != set(LOD):
+                    missing = set(LOD) - set(descriptions)
+                    raise ValueError(
+                        f"character {slug!r} missing LODs: "
+                        f"{sorted(m.value for m in missing)}",
+                    )
+            else:
+                appearance = raw.get("appearance")
+                if not appearance:
+                    raise ValueError(
+                        f"character {slug!r}: provide either `descriptions` "
+                        f"(LOD-keyed) or `appearance` prose",
+                    )
+                # Production schema has no LOD variants. Replicate the prose
+                # to every LOD; downstream slot eviction handles truncation.
+                descriptions = dict.fromkeys(LOD, appearance)
+
             entries[f"npc:{slug}"] = CharacterTokens(
                 kind="npc",
                 descriptions=descriptions,
@@ -224,9 +257,7 @@ class StyleCatalog:
             genre_tokens[genre] = suffix
 
         # World style
-        world_style = (
-            genre_packs_root / genre / "worlds" / world / "visual_style.yaml"
-        )
+        world_style = genre_packs_root / genre / "worlds" / world / "visual_style.yaml"
         if world_style.exists():
             data = yaml.safe_load(world_style.read_text()) or {}
             suffix = data.get("positive_suffix", "")
