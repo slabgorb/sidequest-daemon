@@ -1,0 +1,27 @@
+# Mirror of the production portrait_manifest.yaml schema.
+# Real worlds (caverns_and_claudes, space_opera, etc.) use this shape — flat
+# `name` + `appearance` prose, no `id`, no LOD-keyed `descriptions` dict.
+# This fixture pins that schema so CharacterCatalog.load is forced to support
+# the actual content shape rather than the synthetic `id`/`descriptions` shape.
+
+characters:
+
+  - name: Imperatrix Celestine VII
+    role: Ruler of the realm
+    type: npc_major
+    appearance: >-
+      A woman in her early sixties who looks forty and moves like thirty,
+      with deep brown skin and silver hair sculpted into an architectural
+      updo. Tall, imperious, gold cosmetic implants that let her see in
+      the star's full spectrum.
+    culture_aesthetic: >-
+      Peak Doctrine of Radiance — the ruler as living artwork.
+    element_visual: >-
+      The Solar Diadem — a crown that projects a halo of contained plasma.
+
+  - name: Two-Word Name
+    role: Supporting character
+    type: npc_supporting
+    appearance: >-
+      A person with a two-word name to verify the slugifier handles
+      multi-token names with internal whitespace.
