@@ -452,6 +452,47 @@ def test_compose_emits_otel_span(composer: PromptComposer, monkeypatch) -> None:
     assert span["payload"]["world"] == "testworld"
     assert "layers" in span["payload"]
     assert any(layer["slot"] == "CASTING" for layer in span["payload"]["layers"])
+    # Bug #2a (playtest 2026-04-26) lie-detector flags. The portrait recipe
+    # includes ART_SENSIBILITY.GENRE; the testgenre fixture has a non-empty
+    # positive_suffix so the genre flag must be true. Whether the world
+    # flag is true depends on the recipe (portrait recipes typically don't
+    # include WORLD), so we just assert the field is present.
+    assert "genre_style_applied" in span["payload"]
+    assert "world_style_applied" in span["payload"]
+    assert span["payload"]["genre_style_applied"] is True
+
+
+def test_compose_otel_world_flag_true_for_styled_world(
+    composer: PromptComposer, monkeypatch
+) -> None:
+    """Bug #2a (playtest 2026-04-26): when both genre and world have a
+    non-empty ``positive_suffix`` and the recipe includes the WORLD layer,
+    the ``world_style_applied`` lie-detector flag must be True. This is
+    the test that would have caught the grimvault regression — it asserts
+    the flag flips for a fixture where the world style is genuinely
+    populated and the recipe consumes it (illustration recipe)."""
+    emitted: list[dict] = []
+
+    def fake_emit(name: str, payload: dict) -> None:
+        emitted.append({"name": name, "payload": payload})
+
+    monkeypatch.setattr(
+        "sidequest_daemon.media.prompt_composer._emit_watcher_event",
+        fake_emit,
+    )
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["npc:rux"], action="arriving",
+        location="where:testworld/the_lookout", camera=CameraPreset.scene,
+    )
+    composer.compose(t)
+    span = next(e for e in emitted if e["name"] == "render.prompt_composed")
+    assert span["payload"]["genre_style_applied"] is True
+    assert span["payload"]["world_style_applied"] is True, (
+        "world_style_applied must be True when world's visual_style.yaml "
+        "has a non-empty positive_suffix and the recipe consumes WORLD; "
+        "False here means the regression that hit grimvault is back"
+    )
 
 
 GOLDEN_DIR = Path(__file__).parent / "golden"

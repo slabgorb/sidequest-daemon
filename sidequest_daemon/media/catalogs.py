@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Literal
 
@@ -13,6 +14,8 @@ from sidequest_daemon.media.recipes import (
     CatalogMissError,
     PlaceLOD,
 )
+
+log = logging.getLogger(__name__)
 
 
 class CharacterTokens(BaseModel):
@@ -204,7 +207,21 @@ class StyleCatalog:
         genre_style = genre_packs_root / genre / "visual_style.yaml"
         if genre_style.exists():
             data = yaml.safe_load(genre_style.read_text()) or {}
-            genre_tokens[genre] = data.get("positive_suffix", "")
+            suffix = data.get("positive_suffix", "")
+            if not suffix:
+                # CLAUDE.md "No Silent Fallbacks": a present visual_style.yaml
+                # with no usable positive_suffix is almost always a schema-
+                # drift bug (e.g. legacy ``style_prompt`` / ``flux_prompt_suffix``
+                # field names that the daemon never reads). Log loudly so
+                # the GM panel can see why a render came out styleless.
+                log.warning(
+                    "style_catalog.empty_positive_suffix scope=genre genre=%s "
+                    "path=%s known_keys=%s",
+                    genre,
+                    genre_style,
+                    sorted(data.keys()),
+                )
+            genre_tokens[genre] = suffix
 
         # World style
         world_style = (
@@ -212,7 +229,22 @@ class StyleCatalog:
         )
         if world_style.exists():
             data = yaml.safe_load(world_style.read_text()) or {}
-            world_tokens[(genre, world)] = data.get("positive_suffix", "")
+            suffix = data.get("positive_suffix", "")
+            if not suffix:
+                # Bug #2a (playtest 2026-04-26): grimvault's visual_style.yaml
+                # used ``style_prompt`` instead of ``positive_suffix``, so
+                # world-level styling was silently dropped. Surface this as
+                # a loud warning so future drift is caught at daemon startup
+                # rather than discovered mid-playtest.
+                log.warning(
+                    "style_catalog.empty_positive_suffix scope=world "
+                    "genre=%s world=%s path=%s known_keys=%s",
+                    genre,
+                    world,
+                    world_style,
+                    sorted(data.keys()),
+                )
+            world_tokens[(genre, world)] = suffix
 
         # Cultures (world-scoped — per spec)
         cultures_dir = genre_packs_root / genre / "worlds" / world / "cultures"
