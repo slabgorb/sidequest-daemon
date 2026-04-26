@@ -146,15 +146,42 @@ class PlaceCatalog:
         data = yaml.safe_load(path.read_text()) or {}
         for chapter in data.get("chapters", []):
             for poi in chapter.get("points_of_interest", []):
-                slug = poi["slug"]
-                visual = poi.get("visual_prompt", {})
-                env = poi.get("environment", {})
+                # Production worlds (e.g. victoria/blackthorn_moor) author POIs
+                # with `name` only — derive the slug parallel to
+                # CharacterCatalog.load. Fail loud only when neither is honored.
+                slug = poi.get("slug")
+                if not slug:
+                    name = poi.get("name")
+                    if not name:
+                        raise ValueError(
+                            f"POI in {path}: needs `slug` or `name`",
+                        )
+                    slug = _slugify_name(name)
+                visual = poi.get("visual_prompt", {}) or {}
+                env = poi.get("environment", {}) or {}
                 if isinstance(visual, str) or isinstance(env, str):
                     raise ValueError(
                         f"POI {slug!r} has string visual_prompt/environment — "
                         f"migrate to {{solo: ..., backdrop: ...}} LODs "
                         f"(see scripts/migrate_poi_backdrop_lod.py)",
                     )
+                # Skip POIs with no visual prose at all. Adding them to the
+                # catalog with empty CASTING/LOCATION layers produces a thin
+                # compose (genre style + camera + safety only) that is
+                # *worse* than the prose-subject prompt the narrator already
+                # supplies. Letting them catalog-miss routes through the
+                # safe wrapper → prose-subject fallback wins. Logged at INFO
+                # so content authors see which POIs are unauthored.
+                has_visual = any(visual.get(k) for k in ("solo", "backdrop"))
+                has_env = any(env.get(k) for k in ("solo", "backdrop"))
+                if not has_visual and not has_env:
+                    log.info(
+                        "place_catalog.poi_skipped reason=no_visual "
+                        "world=%s slug=%s",
+                        world,
+                        slug,
+                    )
+                    continue
                 landmark = {
                     PlaceLOD.SOLO: visual.get("solo", ""),
                     PlaceLOD.BACKDROP: visual.get("backdrop", ""),
