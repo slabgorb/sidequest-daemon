@@ -102,21 +102,33 @@ def compose_prompt_for(cue: StageCue) -> ComposedPrompt:
 
 
 class ZImageMLXWorker:
-    """Z-Image Base 1.0 image generation worker using Apple MLX via mflux."""
+    """Z-Image Turbo image generation worker using Apple MLX via mflux.
+
+    Migrated from `z-image` (base, 20 steps, CFG 4.0) to `z-image-turbo`
+    (LCM-distilled, 8 steps, no CFG) on 2026-04-26 per the S4-PERF
+    investigation. Per-render wall-clock target: ~30s (was ~108s).
+    """
+
+    # The mflux model alias passed to ModelConfig.from_name. The string is
+    # also written to OTEL spans as `model.variant` so the GM panel can
+    # tell turbo and base-Z-Image renders apart at a glance.
+    MODEL_VARIANT: str = "z-image-turbo"
 
     # Tier config — KEEP IN SYNC with zimage_config.py and daemon.py IMAGE_TIERS.
+    # Turbo is distilled, so guidance is fixed at 0.0 (CFG is a no-op).
     TIER_CONFIGS = {
-        "scene_illustration": {"steps": 20, "guidance": 4.0, "w": 1024, "h": 768},
-        "portrait":           {"steps": 20, "guidance": 4.0, "w": 768,  "h": 1024},
-        "portrait_square":    {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
-        "landscape":          {"steps": 20, "guidance": 4.0, "w": 1024, "h": 768},
-        "text_overlay":       {"steps": 20, "guidance": 4.0, "w": 768,  "h": 512},
-        "cartography":        {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
-        "fog_of_war":         {"steps": 20, "guidance": 4.0, "w": 1024, "h": 1024},
+        "scene_illustration": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 768},
+        "portrait":           {"steps": 8, "guidance": 0.0, "w": 768,  "h": 1024},
+        "portrait_square":    {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
+        "landscape":          {"steps": 8, "guidance": 0.0, "w": 1024, "h": 768},
+        "text_overlay":       {"steps": 8, "guidance": 0.0, "w": 768,  "h": 512},
+        "cartography":        {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
+        "fog_of_war":         {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
     }
 
-    # Quantization level for model loading. None = full precision.
-    QUANTIZE: int | None = None
+    # Quantization level for model loading. 8-bit per mflux's Turbo README
+    # example (`--steps 9 --quantize 8`). None = full precision.
+    QUANTIZE: int | None = 8
 
     # Z-Image's default scheduler per its CLI.
     #
@@ -147,18 +159,23 @@ class ZImageMLXWorker:
         self.model: object | None = None
 
     def load_model(self) -> None:
-        """Load Z-Image Base 1.0 via mflux."""
+        """Load the configured Z-Image variant via mflux."""
         tracer = trace.get_tracer(
             "sidequest_daemon.media.workers.zimage_mlx_worker"
         )
         with tracer.start_as_current_span("zimage_mlx.load_model") as span:
+            # `model.name` retains the historical "z-image" value so existing
+            # OTEL queries / dashboards keep working. `model.variant` is the
+            # new-since-2026-04-26 attribute that distinguishes turbo from
+            # base — the GM panel filters on this.
             span.set_attribute("model.name", "z-image")
+            span.set_attribute("model.variant", self.MODEL_VARIANT)
             span.set_attribute("model.quantize", self.QUANTIZE or 0)
             from mflux.models.common.config import ModelConfig
             from mflux.models.z_image.variants.z_image import ZImage
 
             self.model = ZImage(
-                model_config=ModelConfig.from_name("z-image"),
+                model_config=ModelConfig.from_name(self.MODEL_VARIANT),
                 quantize=self.QUANTIZE,
             )
 
@@ -179,7 +196,7 @@ class ZImageMLXWorker:
                 seed=0,
                 prompt="black",
                 num_inference_steps=2,
-                guidance=0.0,
+                guidance=None,
                 width=512,
                 height=512,
                 scheduler=self.SCHEDULER,
@@ -215,6 +232,7 @@ class ZImageMLXWorker:
                 negative_prompt = params.get("negative_prompt") or None
                 seed = params.get("seed", 0)
 
+                span.set_attribute("model.variant", self.MODEL_VARIANT)
                 span.set_attribute("render.tier", tier_name)
                 span.set_attribute("render.seed", seed)
                 span.set_attribute("render.width", tier_cfg["w"])
@@ -235,12 +253,21 @@ class ZImageMLXWorker:
                 self._ensure_loaded()
                 assert self.model is not None
 
+                # Z-Image Turbo's ModelConfig sets supports_guidance=False;
+                # pass guidance=None (mflux's "disabled" sentinel) when the
+                # tier guidance is 0.0 so we don't accidentally activate a
+                # CFG path on a distilled model. Base Z-Image (guidance>0)
+                # would still send the float through unchanged if reverted.
+                guidance_arg: float | None = (
+                    tier_cfg["guidance"] if tier_cfg["guidance"] > 0.0 else None
+                )
+
                 start = time.monotonic()
                 image = self.model.generate_image(  # type: ignore[attr-defined]
                     seed=seed,
                     prompt=prompt,
                     num_inference_steps=tier_cfg["steps"],
-                    guidance=tier_cfg["guidance"],
+                    guidance=guidance_arg,
                     width=tier_cfg["w"],
                     height=tier_cfg["h"],
                     scheduler=self.SCHEDULER,
