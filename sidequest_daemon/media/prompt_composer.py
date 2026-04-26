@@ -114,6 +114,22 @@ class PromptComposer:
         clip = self._build_clip(layers)
         negative = self._build_negative(target)
 
+        # Bug #2a (playtest 2026-04-26) lie-detector: record whether the
+        # genre and world ART_SENSIBILITY layers actually contributed any
+        # tokens. The grimvault regression had the world layer silently
+        # empty because the visual_style.yaml used ``style_prompt`` instead
+        # of ``positive_suffix``; without an explicit "world style applied?"
+        # signal the GM panel could not tell a styled render from a
+        # styleless one. Both flags MUST be true on a fully-styled render.
+        genre_layer_applied = any(
+            layer.slot == "ART_SENSIBILITY.GENRE" and layer.tokens.strip()
+            for layer in layers
+        )
+        world_layer_applied = any(
+            layer.slot == "ART_SENSIBILITY.WORLD" and layer.tokens.strip()
+            for layer in layers
+        )
+
         _emit_watcher_event(
             "render.prompt_composed",
             {
@@ -133,6 +149,9 @@ class PromptComposer:
                 ],
                 "dropped_layers": dropped,
                 "warnings": warnings,
+                # Lie-detector flags — see comment above.
+                "genre_style_applied": genre_layer_applied,
+                "world_style_applied": world_layer_applied,
             },
         )
 
