@@ -24,6 +24,34 @@ def test_loads_world_characters():
     assert tokens.default_pose.startswith("standing")
 
 
+def test_loads_production_schema_characters():
+    """Production manifests use flat `name` + `appearance` (no `id`, no LOD dict)."""
+    cat = CharacterCatalog.load(FIXTURE_ROOT, genre="prodgenre", world="prodworld")
+
+    # Slug derived from name by lowercasing, collapsing whitespace to `_`,
+    # and dropping punctuation. "Imperatrix Celestine VII" → "imperatrix_celestine_vii".
+    tokens = cat.get("npc:imperatrix_celestine_vii")
+    assert isinstance(tokens, CharacterTokens)
+    assert tokens.kind == "npc"
+
+    # All four LODs populated — production has no LOD distinctions, so the
+    # appearance prose populates every level. Downstream eviction/truncation
+    # handles token budgeting per slot.
+    for lod in LOD:
+        assert tokens.descriptions[lod], f"missing {lod}"
+        assert "deep brown skin" in tokens.descriptions[lod]
+
+    # Production schema has no `culture` field; it must resolve to None
+    # rather than crashing.
+    assert tokens.culture is None
+    # Production schema has no `default_pose`; defaults to empty string.
+    assert tokens.default_pose == ""
+
+    # Slugifier preserves hyphens and replaces only whitespace.
+    two_word = cat.get("npc:two-word_name")
+    assert "multi-token names" in two_word.descriptions[LOD.SOLO]
+
+
 def test_all_four_lods_present():
     cat = CharacterCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld")
     t = cat.get("npc:rux")
