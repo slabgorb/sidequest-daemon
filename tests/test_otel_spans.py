@@ -122,8 +122,8 @@ class TestRenderSpan:
         spans = otel_exporter.get_finished_spans()
         render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
-        # cartography uses 20 steps per TIER_CONFIGS
-        assert attrs.get("render.steps") == 20
+        # cartography uses 8 steps per TIER_CONFIGS (Z-Image Turbo migration).
+        assert attrs.get("render.steps") == 8
 
     def test_render_span_has_guidance(self, tmp_path, otel_exporter):
         """render span must include guidance scale for the tier."""
@@ -133,7 +133,20 @@ class TestRenderSpan:
         spans = otel_exporter.get_finished_spans()
         render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
         attrs = dict(render_spans[-1].attributes)
-        assert attrs.get("render.guidance") == pytest.approx(4.0)
+        # Z-Image Turbo is distilled (supports_guidance=False); guidance is
+        # recorded as 0.0 for OTEL but the model is called with guidance=None.
+        assert attrs.get("render.guidance") == pytest.approx(0.0)
+
+    def test_render_span_has_model_variant(self, tmp_path, otel_exporter):
+        """render span must include model.variant so the GM panel can tell
+        turbo apart from base Z-Image."""
+        worker = _make_worker_with_mock_model(tmp_path)
+        worker.render({"tier": "portrait", "positive_prompt": "x", "seed": 0})
+
+        spans = otel_exporter.get_finished_spans()
+        render_spans = [s for s in spans if s.name == "zimage_mlx.render"]
+        attrs = dict(render_spans[-1].attributes)
+        assert attrs.get("model.variant") == "z-image-turbo"
 
 
 # ---------------------------------------------------------------------------

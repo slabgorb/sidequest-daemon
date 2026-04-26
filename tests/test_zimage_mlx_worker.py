@@ -119,6 +119,37 @@ def test_compose_prompt_fallback_from_raw_fields(worker: ZImageMLXWorker):
     assert "armor" in called_prompt
 
 
+def test_worker_targets_z_image_turbo(worker: ZImageMLXWorker):
+    """Lock-in: the worker is wired to Z-Image Turbo, not base Z-Image.
+
+    Guards against accidental rollback of the 2026-04-26 perf migration.
+    """
+    assert worker.MODEL_VARIANT == "z-image-turbo"
+    assert worker.QUANTIZE == 8
+
+
+def test_worker_uses_8_step_turbo_preset(worker: ZImageMLXWorker):
+    """Lock-in: every tier uses the Turbo 8-step preset with guidance disabled."""
+    for tier_name, cfg in worker.TIER_CONFIGS.items():
+        assert cfg["steps"] == 8, f"{tier_name} must use 8 steps for Turbo"
+        assert cfg["guidance"] == 0.0, f"{tier_name} must disable guidance for Turbo"
+
+
+def test_render_calls_model_with_guidance_none_for_turbo(worker: ZImageMLXWorker):
+    """Turbo's mflux ModelConfig sets supports_guidance=False; the worker
+    must pass guidance=None to generate_image so we don't accidentally drive
+    a CFG path on a distilled model."""
+    mock_model = MagicMock()
+    mock_model.generate_image.return_value = _fake_pil_image()
+    worker.model = mock_model
+
+    worker.render({"tier": "portrait", "positive_prompt": "x", "seed": 0})
+
+    call_kwargs = mock_model.generate_image.call_args.kwargs
+    assert call_kwargs["guidance"] is None
+    assert call_kwargs["num_inference_steps"] == 8
+
+
 def test_compose_prompt_requires_content(worker: ZImageMLXWorker):
     mock_model = MagicMock()
     mock_model.generate_image.return_value = _fake_pil_image()
