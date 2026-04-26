@@ -30,6 +30,43 @@ from opentelemetry import trace
 SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
 PID_PATH = Path("/tmp/sidequest-renderer.pid")
 
+# Socket ownership guard — set to True only inside ``_run_daemon`` after
+# ``asyncio.start_unix_server`` returns successfully. Cleanup paths (the
+# shutdown ``finally`` block, the ``send_shutdown`` "stale socket" branch)
+# MUST check this flag before calling ``SOCKET_PATH.unlink()``. Without the
+# guard, any process that imports this module — a warmup helper, a
+# misrouted ``--shutdown`` racing the listening daemon's startup, or a
+# future tool that calls into ``daemon.py`` — can unlink the path that the
+# real listening daemon has already bound to. The kernel keeps the bound
+# socket fd valid (lsof still reports the process holding it), but new
+# clients cannot ``connect()`` because the directory entry is gone, and the
+# server logs ``render.skipped reason=daemon_unavailable`` for every render.
+# Playtest 2026-04-26 [P1] root cause.
+_owns_socket: bool = False
+
+
+def _live_daemon_pid() -> int | None:
+    """Return the PID of a running daemon if PID_PATH points to one, else None.
+
+    Used to gate destructive socket cleanup. Reads PID_PATH and probes the
+    process with ``os.kill(pid, 0)`` (signal 0 = liveness check, never
+    actually delivered). Any failure reading or probing returns None — the
+    caller treats that as "no live daemon, safe to clean up."
+    """
+    if not PID_PATH.exists():
+        return None
+    try:
+        pid = int(PID_PATH.read_text().strip())
+    except (OSError, ValueError):
+        return None
+    if pid <= 0 or pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)
+    except (ProcessLookupError, PermissionError, OSError):
+        return None
+    return pid
+
 # Story 37-23: OTEL tracer for dispatch-level instrumentation. The GM panel
 # consumes these spans via the ADR-058 Claude-subprocess OTEL passthrough to
 # verify that the lock split is actually delivering concurrent render+embed
@@ -668,14 +705,30 @@ async def _run_daemon(
             await asyncio.to_thread(pool.warm_up_embed)
         log.info("Models warm and ready")
 
-    # Clean up stale socket
+    # Clean up stale socket — but ONLY if no live process is bound to it.
+    # If a PID file exists and points to a running process, refuse to unlink:
+    # that would yank the directory entry out from under a live daemon and
+    # leave clients unable to connect (Playtest 2026-04-26 [P1]). Fail loud
+    # per the no-silent-fallbacks rule.
     if SOCKET_PATH.exists():
+        if _live_daemon_pid() is not None:
+            raise RuntimeError(
+                f"refusing to unlink {SOCKET_PATH}: another daemon "
+                f"(pid {_live_daemon_pid()}) is already bound to it. "
+                f"Run `just daemon-stop` or check for orphaned processes."
+            )
+        log.debug("daemon.cleanup_stale_socket path=%s", SOCKET_PATH)
         SOCKET_PATH.unlink()
 
     server = await asyncio.start_unix_server(
         lambda r, w: _handle_client(r, w, pool, render_lock, embed_lock),
         path=str(SOCKET_PATH),
     )
+
+    # Mark this process as the socket owner. Only the owner may unlink on
+    # shutdown — see ``_owns_socket`` docstring at module top.
+    global _owns_socket
+    _owns_socket = True
 
     # Write PID file
     PID_PATH.write_text(str(os.getpid()))
@@ -700,10 +753,23 @@ async def _run_daemon(
         server.close()
         await server.wait_closed()
         pool.cleanup()
-        if SOCKET_PATH.exists():
+        # Only the bind-owner may unlink. Without this guard, a process that
+        # entered ``_run_daemon`` and then bailed before bind (or was started
+        # in some warmup-only mode in the future) would still hit this
+        # ``finally`` block and unlink the live daemon's socket.
+        if _owns_socket and SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
+        elif SOCKET_PATH.exists():
+            log.debug(
+                "daemon.skip_unlink path=%s reason=not_owner pid=%d",
+                SOCKET_PATH,
+                os.getpid(),
+            )
         if PID_PATH.exists():
-            PID_PATH.unlink()
+            # PID file is keyed to this process — only delete if we wrote it,
+            # which only happens after a successful bind (i.e. _owns_socket).
+            if _owns_socket:
+                PID_PATH.unlink()
         log.info("Daemon stopped")
 
 
@@ -726,6 +792,17 @@ async def send_shutdown() -> None:
             print(f"Unexpected response: {resp}")
         writer.close()
     except (ConnectionRefusedError, FileNotFoundError):
+        # Distinguish a *truly* stale socket (no live process) from a daemon
+        # that's mid-startup (warming models before ``start_unix_server``
+        # binds). In the second case the path may not yet exist or the
+        # connect raced bind — unlinking would corrupt the live daemon.
+        live_pid = _live_daemon_pid()
+        if live_pid is not None:
+            print(
+                f"Daemon not responding but pid {live_pid} is alive "
+                "(likely warming up) — refusing to unlink socket"
+            )
+            return
         print("Daemon not responding — cleaning up stale socket")
         if SOCKET_PATH.exists():
             SOCKET_PATH.unlink()
