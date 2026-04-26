@@ -67,6 +67,7 @@ def _live_daemon_pid() -> int | None:
         return None
     return pid
 
+
 # Story 37-23: OTEL tracer for dispatch-level instrumentation. The GM panel
 # consumes these spans via the ADR-058 Claude-subprocess OTEL passthrough to
 # verify that the lock split is actually delivering concurrent render+embed
@@ -457,7 +458,7 @@ async def _handle_client(
                     and not params.get("positive_prompt")
                 ):
                     from sidequest_daemon.media.workers.zimage_mlx_worker import (
-                        compose_prompt_for,
+                        try_compose_prompt_for,
                     )
                     from sidequest_daemon.renderer.models import RenderTier, StageCue
 
@@ -480,15 +481,21 @@ async def _handle_client(
                         },
                     )
 
-                    composed = compose_prompt_for(cue)
-                    params["positive_prompt"] = composed.positive_prompt
-                    params["clip_prompt"] = composed.clip_prompt
-                    params["negative_prompt"] = composed.negative_prompt
-                    params["seed"] = composed.seed
-                    log.info(
-                        "prompt_composed — positive=%s",
-                        composed.positive_prompt[:150],
-                    )
+                    # Best-effort compose. On any catalog miss or validation
+                    # failure the wrapper logs `compose.skipped` and returns
+                    # None; the daemon then falls through to the legacy
+                    # prose-subject prompt path so renders never crash on
+                    # a compose error.
+                    composed = try_compose_prompt_for(cue)
+                    if composed is not None:
+                        params["positive_prompt"] = composed.positive_prompt
+                        params["clip_prompt"] = composed.clip_prompt
+                        params["negative_prompt"] = composed.negative_prompt
+                        params["seed"] = composed.seed
+                        log.info(
+                            "prompt_composed — positive=%s",
+                            composed.positive_prompt[:150],
+                        )
 
                 # Serialize renders — only one GPU operation at a time.
                 # Story 37-23: wrap dispatch in OTEL span so the GM panel can
@@ -664,8 +671,10 @@ async def _run_daemon(
         # Non-fatal: server falls back to the env var path. Logged so the
         # GM panel / dev shell can spot the discovery hole.
         import logging as _logging
+
         _logging.getLogger(__name__).warning(
-            "daemon.handshake_write_failed dir=%s", handshake_dir,
+            "daemon.handshake_write_failed dir=%s",
+            handshake_dir,
         )
 
     if genre_packs is not None:
