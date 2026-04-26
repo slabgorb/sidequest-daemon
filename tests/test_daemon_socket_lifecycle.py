@@ -106,10 +106,21 @@ def test_live_daemon_pid_handles_garbage(tmp_path, monkeypatch):
 @pytest.fixture()
 def daemon_process(tmp_path):
     """Boot the real daemon in a subprocess (no warmup → fast). Tear it
-    down after the test."""
+    down after the test.
+
+    Critical: ``HOME`` is overridden to ``tmp_path`` so the daemon's
+    handshake write (``~/.sidequest/daemon-output-dir``) lands in test
+    scope. Without this, every test run leaves a stale handshake
+    pointing at a long-cleaned-up pytest tmpdir in the user's real
+    ``~/.sidequest/``, which then steers the running dev server's
+    ``/renders`` mount onto a non-existent directory the next time
+    ``create_app`` is reloaded — exactly the failure that hid behind
+    the playtest 2026-04-26 "scrapbook images stopped" report.
+    """
     env = {
         **os.environ,
         "SIDEQUEST_GENRE_PACKS": str(tmp_path),
+        "HOME": str(tmp_path),
     }
     # --no-warmup keeps this test under ~3s. The race we are guarding
     # against is socket-lifecycle, not model-loading.
