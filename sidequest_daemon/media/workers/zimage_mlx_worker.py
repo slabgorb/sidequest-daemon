@@ -101,6 +101,31 @@ def compose_prompt_for(cue: StageCue) -> ComposedPrompt:
     return composer.compose(target)
 
 
+def try_compose_prompt_for(cue: StageCue) -> ComposedPrompt | None:
+    """Best-effort compose: return the ComposedPrompt on success, or `None`
+    on any catalog miss / validation error / unknown failure.
+
+    The compose path requires structured refs (`npc:slug`, `where:scope/slug`)
+    that the server does not yet supply for every render. Wrapping the call
+    here lets the caller observe every attempt in OTEL and fall back to the
+    legacy prose-subject prompt without crashing the render. The reason is
+    logged at WARNING with the cue tier + genre/world so the GM panel can
+    distinguish "compose attempted and failed" from "compose never attempted".
+    """
+    try:
+        return compose_prompt_for(cue)
+    except Exception as exc:  # noqa: BLE001 — fallback path must not crash the daemon
+        log.warning(
+            "compose.skipped tier=%s world=%s/%s reason=%s error=%s",
+            cue.tier.value,
+            cue.metadata.get("genre", "?"),
+            cue.metadata.get("world", "?"),
+            type(exc).__name__,
+            str(exc)[:160],
+        )
+        return None
+
+
 class ZImageMLXWorker:
     """Z-Image Turbo image generation worker using Apple MLX via mflux.
 
@@ -118,12 +143,12 @@ class ZImageMLXWorker:
     # Turbo is distilled, so guidance is fixed at 0.0 (CFG is a no-op).
     TIER_CONFIGS = {
         "scene_illustration": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 768},
-        "portrait":           {"steps": 8, "guidance": 0.0, "w": 768,  "h": 1024},
-        "portrait_square":    {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
-        "landscape":          {"steps": 8, "guidance": 0.0, "w": 1024, "h": 768},
-        "text_overlay":       {"steps": 8, "guidance": 0.0, "w": 768,  "h": 512},
-        "cartography":        {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
-        "fog_of_war":         {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
+        "portrait": {"steps": 8, "guidance": 0.0, "w": 768, "h": 1024},
+        "portrait_square": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
+        "landscape": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 768},
+        "text_overlay": {"steps": 8, "guidance": 0.0, "w": 768, "h": 512},
+        "cartography": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
+        "fog_of_war": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
     }
 
     # Quantization level for model loading. 8-bit per mflux's Turbo README
@@ -160,9 +185,7 @@ class ZImageMLXWorker:
 
     def load_model(self) -> None:
         """Load the configured Z-Image variant via mflux."""
-        tracer = trace.get_tracer(
-            "sidequest_daemon.media.workers.zimage_mlx_worker"
-        )
+        tracer = trace.get_tracer("sidequest_daemon.media.workers.zimage_mlx_worker")
         with tracer.start_as_current_span("zimage_mlx.load_model") as span:
             # `model.name` retains the historical "z-image" value so existing
             # OTEL queries / dashboards keep working. `model.variant` is the
@@ -186,9 +209,7 @@ class ZImageMLXWorker:
     def warm_up(self) -> dict:
         """MLX graph compilation via dummy generation."""
         self._ensure_loaded()
-        tracer = trace.get_tracer(
-            "sidequest_daemon.media.workers.zimage_mlx_worker"
-        )
+        tracer = trace.get_tracer("sidequest_daemon.media.workers.zimage_mlx_worker")
         with tracer.start_as_current_span("zimage_mlx.warm_up") as span:
             start = time.monotonic()
             assert self.model is not None
@@ -208,9 +229,7 @@ class ZImageMLXWorker:
 
     def render(self, params: dict) -> dict:
         """Generate image from StageCue params. Returns result dict."""
-        tracer = trace.get_tracer(
-            "sidequest_daemon.media.workers.zimage_mlx_worker"
-        )
+        tracer = trace.get_tracer("sidequest_daemon.media.workers.zimage_mlx_worker")
         with tracer.start_as_current_span("zimage_mlx.render") as span:
             try:
                 tier_name = params.get("tier", "")
@@ -240,13 +259,15 @@ class ZImageMLXWorker:
                 span.set_attribute("render.steps", tier_cfg["steps"])
                 span.set_attribute("render.guidance", tier_cfg["guidance"])
                 span.set_attribute("render.prompt_length", len(prompt))
-                span.set_attribute(
-                    "render.negative_length", len(negative_prompt or "")
-                )
+                span.set_attribute("render.negative_length", len(negative_prompt or ""))
 
                 log.info(
                     "ZIMAGE RENDER [%s] seed=%s w=%s h=%s steps=%s",
-                    tier_name, seed, tier_cfg["w"], tier_cfg["h"], tier_cfg["steps"],
+                    tier_name,
+                    seed,
+                    tier_cfg["w"],
+                    tier_cfg["h"],
+                    tier_cfg["steps"],
                 )
                 log.info("  prompt: %s", prompt[:150])
 

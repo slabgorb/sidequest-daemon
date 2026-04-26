@@ -8,9 +8,7 @@ from sidequest_daemon.media.recipes import CameraPreset
 from sidequest_daemon.media.workers import zimage_mlx_worker
 from sidequest_daemon.renderer.models import RenderTier, StageCue
 
-FIXTURE_ROOT = (
-    Path(__file__).parent / "fixtures" / "visual_recipes" / "genre_packs"
-)
+FIXTURE_ROOT = Path(__file__).parent / "fixtures" / "visual_recipes" / "genre_packs"
 
 
 def test_daemon_refuses_to_start_with_invalid_recipes(tmp_path) -> None:
@@ -73,3 +71,74 @@ def test_wiring_end_to_end_produces_nonempty_prompt(monkeypatch) -> None:
     prompt = zimage_mlx_worker.compose_prompt_for(cue)
     assert "inquisitor" in prompt.positive_prompt
     assert prompt.seed != 0
+
+
+def test_try_compose_returns_prompt_on_success(monkeypatch) -> None:
+    """try_compose_prompt_for delegates to compose_prompt_for on the happy path."""
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
+    cue = StageCue(
+        tier=RenderTier.PORTRAIT,
+        subject="npc:rux",
+        characters=["npc:rux"],
+        camera=CameraPreset.portrait_3q,
+        metadata={"world": "testworld", "genre": "testgenre"},
+    )
+    composed = zimage_mlx_worker.try_compose_prompt_for(cue)
+    assert composed is not None
+    assert "inquisitor" in composed.positive_prompt
+
+
+def test_try_compose_returns_none_on_validation_error(
+    monkeypatch,
+    caplog,
+) -> None:
+    """A LANDSCAPE cue with a prose subject (not a `where:` ref) raises a
+    pydantic ValidationError inside the composer; the safe wrapper must
+    catch it, emit a `compose.skipped` log line, and return None so the
+    daemon can fall back to the prose-subject prompt path."""
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
+    cue = StageCue(
+        tier=RenderTier.LANDSCAPE,
+        # Prose, not a `where:testworld/<slug>` ref → validator rejects.
+        subject="A stone tavern interior with lamplight on oak beams",
+        metadata={"world": "testworld", "genre": "testgenre"},
+    )
+
+    import logging
+
+    with caplog.at_level(
+        logging.WARNING, logger="sidequest_daemon.media.workers.zimage_mlx_worker"
+    ):
+        composed = zimage_mlx_worker.try_compose_prompt_for(cue)
+
+    assert composed is None
+    skipped = [r for r in caplog.records if "compose.skipped" in r.getMessage()]
+    assert skipped, (
+        f"expected compose.skipped log, got {[r.getMessage() for r in caplog.records]}"
+    )
+    msg = skipped[0].getMessage()
+    assert "tier=landscape" in msg
+    assert "world=testgenre/testworld" in msg
+
+
+def test_try_compose_returns_none_on_catalog_miss(monkeypatch, caplog) -> None:
+    """A PORTRAIT cue referencing an unknown character must be caught by the
+    safe wrapper (CatalogMissError) and logged, not propagated."""
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
+    cue = StageCue(
+        tier=RenderTier.PORTRAIT,
+        subject="npc:no_such_character",
+        characters=["npc:no_such_character"],
+        camera=CameraPreset.portrait_3q,
+        metadata={"world": "testworld", "genre": "testgenre"},
+    )
+
+    import logging
+
+    with caplog.at_level(
+        logging.WARNING, logger="sidequest_daemon.media.workers.zimage_mlx_worker"
+    ):
+        composed = zimage_mlx_worker.try_compose_prompt_for(cue)
+
+    assert composed is None
+    assert any("compose.skipped" in r.getMessage() for r in caplog.records)
