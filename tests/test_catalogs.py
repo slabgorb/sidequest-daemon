@@ -154,6 +154,89 @@ def test_unknown_culture_raises():
         cat.get_culture("testgenre", "testworld", "nonexistent")
 
 
+def test_poi_without_slug_derives_slug_from_name(tmp_path) -> None:
+    """Production worlds (e.g. ``victoria/blackthorn_moor``) author POIs with
+    ``name``/``description`` and no ``slug``. Pre-fix the loader did
+    ``slug = poi["slug"]`` and crashed with ``KeyError('slug')`` on every
+    render, polluting the GM panel with ``compose.skipped reason=KeyError
+    error='slug'`` and stripping the entire world from the compose path.
+
+    Mirror the parallel ``CharacterCatalog.load`` rule (commit d787c0a):
+    accept both the synthetic ``slug``-keyed schema and the production
+    ``name``-only schema, deriving the slug via ``_slugify_name`` when
+    absent. Fail loud only when neither is honored."""
+    pack = tmp_path / "drifty"
+    (pack / "worlds" / "blackthorn_moor").mkdir(parents=True)
+    (pack / "visual_style.yaml").write_text("positive_suffix: 'painterly'\n")
+    (pack / "worlds" / "blackthorn_moor" / "history.yaml").write_text(
+        "chapters:\n"
+        "  - name: The Present Age\n"
+        "    points_of_interest:\n"
+        "      - name: The Morning Room\n"
+        "        description: 'Oak panels, leaded windows.'\n"
+        "        visual_prompt:\n"
+        "          solo: 'a Victorian morning room, leaded windows'\n"
+        "          backdrop: 'a Victorian morning room'\n"
+        "        environment:\n"
+        "          solo: 'rain on glass, gas-lamp glow, hush'\n"
+        "          backdrop: 'gas-lamp glow'\n"
+    )
+    cat = PlaceCatalog.load(tmp_path, genre="drifty", world="blackthorn_moor")
+    # Slug is derived: "The Morning Room" → "the_morning_room".
+    t = cat.get("where:blackthorn_moor/the_morning_room")
+    assert t.kind == "specific"
+    assert "leaded windows" in t.landmark[PlaceLOD.SOLO]
+
+
+def test_poi_without_visual_blocks_is_skipped(tmp_path, caplog) -> None:
+    """When a POI has neither ``visual_prompt`` nor ``environment`` populated
+    (the blackthorn_moor authoring shape), do NOT add it to the catalog with
+    empty-prose tokens — that would silently degrade compose for the POI
+    (genre style + camera + safety clause only), which is *worse* than the
+    prose-subject fallback the safe wrapper produces on a catalog miss.
+
+    Skip with a loud INFO line so the GM panel and content authors can
+    see which POIs are unauthored. Compose then catalog-misses → safe
+    wrapper logs ``compose.skipped`` → daemon falls through to the rich
+    prose subject the narrator already produced."""
+    import logging
+
+    pack = tmp_path / "thingenre"
+    (pack / "worlds" / "blackthorn_moor").mkdir(parents=True)
+    (pack / "worlds" / "blackthorn_moor" / "history.yaml").write_text(
+        "chapters:\n"
+        "  - name: The Present Age\n"
+        "    points_of_interest:\n"
+        "      - name: The Study\n"
+        "        description: 'Oak-panelled, book-lined.'\n"
+    )
+    with caplog.at_level(logging.INFO, logger="sidequest_daemon.media.catalogs"):
+        cat = PlaceCatalog.load(tmp_path, genre="thingenre", world="blackthorn_moor")
+    with pytest.raises(CatalogMissError):
+        cat.get("where:blackthorn_moor/the_study")
+    assert any(
+        "place_catalog.poi_skipped" in record.message
+        and "reason=no_visual" in record.message
+        and "the_study" in record.message
+        for record in caplog.records
+    ), f"expected place_catalog.poi_skipped log, got: {[r.message for r in caplog.records]}"
+
+
+def test_poi_without_slug_or_name_fails_loud(tmp_path) -> None:
+    """A POI entry with neither ``slug`` nor ``name`` is unauthored — fail
+    loud at load time so content authors learn about it before runtime."""
+    pack = tmp_path / "fail"
+    (pack / "worlds" / "world").mkdir(parents=True)
+    (pack / "worlds" / "world" / "history.yaml").write_text(
+        "chapters:\n"
+        "  - name: T\n"
+        "    points_of_interest:\n"
+        "      - description: 'no name, no slug, just vibes'\n"
+    )
+    with pytest.raises(ValueError, match="slug.*name"):
+        PlaceCatalog.load(tmp_path, genre="fail", world="world")
+
+
 def test_empty_world_positive_suffix_logs_warning(
     tmp_path, caplog
 ) -> None:
