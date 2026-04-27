@@ -458,28 +458,11 @@ async def _handle_client(
                     and not params.get("positive_prompt")
                 ):
                     from sidequest_daemon.media.workers.zimage_mlx_worker import (
+                        build_cue_from_params,
                         try_compose_prompt_for,
                     )
-                    from sidequest_daemon.renderer.models import RenderTier, StageCue
 
-                    tier_str = params.get("tier", "scene_illustration")
-                    tier = (
-                        RenderTier(tier_str)
-                        if tier_str in {t.value for t in RenderTier}
-                        else RenderTier.SCENE_ILLUSTRATION
-                    )
-                    cue = StageCue(
-                        subject=params.get("subject", ""),
-                        tier=tier,
-                        location=params.get("location", ""),
-                        mood=params.get("mood", ""),
-                        characters=params.get("characters", []),
-                        tags=params.get("tags", []),
-                        metadata={
-                            "world": params["world"],
-                            "genre": params["genre"],
-                        },
-                    )
+                    cue = build_cue_from_params(params)
 
                     # Best-effort compose. On any catalog miss or validation
                     # failure the wrapper logs `compose.skipped` and returns

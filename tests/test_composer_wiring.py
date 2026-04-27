@@ -142,3 +142,106 @@ def test_try_compose_returns_none_on_catalog_miss(monkeypatch, caplog) -> None:
 
     assert composed is None
     assert any("compose.skipped" in r.getMessage() for r in caplog.records)
+
+
+def test_build_cue_from_params_forwards_pc_descriptor() -> None:
+    """The daemon dispatch loop projects request params into a StageCue via
+    ``build_cue_from_params``. The wiring test here pins the projection: when
+    the server sends ``pc_descriptor`` alongside ``world``/``genre``, the
+    descriptor must land in ``cue.metadata`` so ``compose_prompt_for`` can
+    register the PC at runtime. Without this projection, slice 2 is a no-op
+    and every portrait keeps falling through to the prose-subject path."""
+    descriptor = {
+        "id": "rux",
+        "appearance": "a wiry highlander in scarred leather",
+        "default_pose": "hand on hilt",
+        "culture": None,
+    }
+    params = {
+        "tier": "portrait",
+        "subject": "pc:rux",
+        "characters": ["pc:rux"],
+        "world": "flickering_reach",
+        "genre": "mutant_wasteland",
+        "pc_descriptor": descriptor,
+        "mood": "",
+        "tags": [],
+        "location": "",
+    }
+    cue = zimage_mlx_worker.build_cue_from_params(params)
+    assert cue.tier == RenderTier.PORTRAIT
+    assert cue.characters == ["pc:rux"]
+    assert cue.metadata["world"] == "flickering_reach"
+    assert cue.metadata["genre"] == "mutant_wasteland"
+    assert cue.metadata["pc_descriptor"] == descriptor
+
+
+def test_build_cue_from_params_omits_descriptor_when_absent() -> None:
+    """No descriptor in params → no descriptor in metadata. Slice 1 callers
+    (no portrait wiring yet) must stay on the legacy path."""
+    params = {
+        "tier": "scene_illustration",
+        "subject": "a courtyard at dusk",
+        "world": "flickering_reach",
+        "genre": "mutant_wasteland",
+    }
+    cue = zimage_mlx_worker.build_cue_from_params(params)
+    assert "pc_descriptor" not in cue.metadata
+
+
+def test_compose_with_pc_descriptor_registers_runtime_pc(monkeypatch) -> None:
+    """A PORTRAIT cue carrying ``cue.metadata['pc_descriptor']`` must register
+    the PC into the freshly-loaded CharacterCatalog before composition. This
+    is slice 2 of the catalog-injected compose wiring: the server sends
+    ``pc:<slug>`` refs plus a descriptor blob, and the daemon adopts the PC
+    into the per-render catalog without a disk lookup. The composed prompt
+    must contain the descriptor's appearance prose, proving the runtime
+    registration reached the casting layer."""
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
+    cue = StageCue(
+        tier=RenderTier.PORTRAIT,
+        subject="pc:gladstone",
+        characters=["pc:gladstone"],
+        camera=CameraPreset.portrait_3q,
+        metadata={
+            "world": "testworld",
+            "genre": "testgenre",
+            "pc_descriptor": {
+                "id": "gladstone",
+                "appearance": "a wiry highlander in scarred leather coat, copper torc",
+                "default_pose": "hand resting on belt",
+                "culture": None,
+            },
+        },
+    )
+    composed = zimage_mlx_worker.compose_prompt_for(cue)
+    assert "wiry highlander" in composed.positive_prompt
+    # The default_pose from the descriptor must reach DIRECTION_ACTION when
+    # the PORTRAIT recipe pulls it from the character's tokens.
+    assert "hand resting on belt" in composed.positive_prompt
+
+
+def test_try_compose_succeeds_for_pc_ref_with_descriptor(monkeypatch) -> None:
+    """try_compose_prompt_for must succeed (return non-None) when the cue
+    carries a pc:<slug> ref AND a matching descriptor — the catalog miss is
+    avoided by the runtime add_pc path."""
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
+    cue = StageCue(
+        tier=RenderTier.PORTRAIT,
+        subject="pc:hero",
+        characters=["pc:hero"],
+        camera=CameraPreset.portrait_3q,
+        metadata={
+            "world": "testworld",
+            "genre": "testgenre",
+            "pc_descriptor": {
+                "id": "hero",
+                "appearance": "a stoic ranger in oilcloth cloak",
+                "default_pose": "",
+                "culture": None,
+            },
+        },
+    )
+    composed = zimage_mlx_worker.try_compose_prompt_for(cue)
+    assert composed is not None
+    assert "stoic ranger" in composed.positive_prompt

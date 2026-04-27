@@ -20,12 +20,14 @@ from opentelemetry import trace
 from sidequest_daemon.media.camera_specs import CameraLoader
 from sidequest_daemon.media.catalogs import (
     CharacterCatalog,
+    CharacterTokens,
     PlaceCatalog,
     StyleCatalog,
 )
 from sidequest_daemon.media.prompt_composer import PromptComposer
 from sidequest_daemon.media.recipe_loader import RecipeLoader
 from sidequest_daemon.media.recipes import (
+    LOD,
     CameraPreset,
     ComposedPrompt,
     RenderTarget,
@@ -37,13 +39,39 @@ log = logging.getLogger(__name__)
 _DAEMON_ROOT = Path(__file__).resolve().parents[3]
 
 
-def _get_composer(genre: str, world: str) -> PromptComposer:
-    """Build a composer scoped to the target's world."""
+def _get_composer(
+    genre: str,
+    world: str,
+    *,
+    pc_descriptor: dict | None = None,
+) -> PromptComposer:
+    """Build a composer scoped to the target's world.
+
+    When ``pc_descriptor`` is supplied (slice 2 of catalog-injected compose
+    wiring), the PC is registered into the freshly-loaded ``CharacterCatalog``
+    via ``add_pc`` before the composer is returned. The descriptor lets the
+    server hand a ``pc:<slug>`` ref to the daemon without first persisting a
+    ``portrait_manifest`` entry — a single appearance prose is replicated to
+    every ``LOD`` (mirror of ``CharacterCatalog.load``'s production path so
+    PCs and NPCs share the same eviction ladder).
+    """
     packs_root = Path(os.environ["SIDEQUEST_GENRE_PACKS"])
+    characters = CharacterCatalog.load(packs_root, genre=genre, world=world)
+    if pc_descriptor is not None:
+        pc_id = pc_descriptor["id"]
+        appearance = pc_descriptor.get("appearance", "")
+        tokens = CharacterTokens(
+            kind="pc",
+            descriptions=dict.fromkeys(LOD, appearance),
+            default_pose=pc_descriptor.get("default_pose", ""),
+            culture=pc_descriptor.get("culture"),
+            world=world,
+        )
+        characters.add_pc(pc_id, tokens)
     return PromptComposer(
         recipes=RecipeLoader.from_file(_DAEMON_ROOT / "recipes.yaml"),
         cameras=CameraLoader.from_file(_DAEMON_ROOT / "cameras.yaml"),
-        characters=CharacterCatalog.load(packs_root, genre=genre, world=world),
+        characters=characters,
         places=PlaceCatalog.load(packs_root, genre=genre, world=world),
         styles=StyleCatalog.load(packs_root, genre=genre, world=world),
     )
@@ -92,11 +120,50 @@ def build_render_target(cue: StageCue) -> RenderTarget:
     raise ValueError(f"unsupported tier for composer routing: {cue.tier!r}")
 
 
+def build_cue_from_params(params: dict) -> StageCue:
+    """Project a daemon `render` request's params dict into a ``StageCue``.
+
+    Pulled out of the `_handle_client` dispatch loop so the params→metadata
+    projection (specifically: forwarding ``pc_descriptor`` for slice 2 of the
+    catalog-injected compose wiring) can be tested without a live socket. The
+    dispatch loop's only responsibility on top of this helper is the
+    early-out conditional checking that subject/world/genre are present.
+    """
+    tier_str = params.get("tier", "scene_illustration")
+    tier = (
+        RenderTier(tier_str)
+        if tier_str in {t.value for t in RenderTier}
+        else RenderTier.SCENE_ILLUSTRATION
+    )
+    metadata: dict = {
+        "world": params["world"],
+        "genre": params["genre"],
+    }
+    pc_descriptor = params.get("pc_descriptor")
+    if pc_descriptor is not None:
+        metadata["pc_descriptor"] = pc_descriptor
+    return StageCue(
+        subject=params.get("subject", ""),
+        tier=tier,
+        location=params.get("location", ""),
+        mood=params.get("mood", ""),
+        characters=params.get("characters", []),
+        tags=params.get("tags", []),
+        metadata=metadata,
+    )
+
+
 def compose_prompt_for(cue: StageCue) -> ComposedPrompt:
-    """Build a ComposedPrompt from a StageCue end-to-end."""
+    """Build a ComposedPrompt from a StageCue end-to-end.
+
+    When ``cue.metadata['pc_descriptor']`` is set, the PC is registered into
+    the catalog before composition runs — the server's ``pc:<slug>`` ref will
+    resolve without a disk lookup.
+    """
     world = cue.metadata["world"]
     genre = cue.metadata["genre"]
-    composer = _get_composer(genre, world)
+    pc_descriptor = cue.metadata.get("pc_descriptor")
+    composer = _get_composer(genre, world, pc_descriptor=pc_descriptor)
     target = build_render_target(cue)
     return composer.compose(target)
 
