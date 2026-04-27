@@ -5,6 +5,7 @@ The ZImage model is mocked — we test worker glue, not the inference pipeline.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -20,6 +21,9 @@ def _fake_pil_image(w: int = 64, h: int = 64) -> Image.Image:
 
 @pytest.fixture
 def worker(tmp_path: Path) -> ZImageMLXWorker:
+    # Singleton-slot reset between tests is handled by the autouse
+    # fixture in conftest.py (`_reset_zimage_singleton`); this fixture
+    # only constructs the worker.
     return ZImageMLXWorker(output_dir=tmp_path)
 
 
@@ -141,3 +145,128 @@ def test_compose_prompt_requires_content(worker: ZImageMLXWorker):
 
     with pytest.raises(ValueError, match="No prompt content"):
         worker.render({"tier": "scene_illustration", "seed": 0})
+
+
+# ── Story 43-5: per-process singleton invariant ──────────────────
+
+
+class TestSingletonInvariant:
+    """ZImageMLXWorker is a per-process singleton (Story 43-5).
+
+    A second construction must raise RuntimeError to fail loudly per
+    CLAUDE.md "No Silent Fallbacks" — protects against any future
+    revert/regression that would silently spawn a second model on the
+    same MPS device.
+    """
+
+    def test_second_construction_raises(self, tmp_path: Path) -> None:
+        # `worker` fixture already constructed one (which the autouse
+        # fixture would normally clean up). Build the first explicitly so
+        # this test is self-contained.
+        ZImageMLXWorker._instance = None
+        first = ZImageMLXWorker(output_dir=tmp_path / "first")
+        try:
+            with pytest.raises(RuntimeError, match="singleton"):
+                ZImageMLXWorker(output_dir=tmp_path / "second")
+        finally:
+            first.cleanup()
+
+    def test_cleanup_releases_singleton_slot(self, tmp_path: Path) -> None:
+        """cleanup() must clear the singleton handle and have __init__
+        repopulate it on the next construction.
+        """
+        ZImageMLXWorker._instance = None
+        first = ZImageMLXWorker(output_dir=tmp_path / "first")
+        assert ZImageMLXWorker._instance is first
+        first.cleanup()
+        assert ZImageMLXWorker._instance is None, (
+            "cleanup() must release the singleton slot"
+        )
+        # Construction repopulates the slot.
+        second = ZImageMLXWorker(output_dir=tmp_path / "second")
+        assert ZImageMLXWorker._instance is second, (
+            "__init__ must reinstall the new instance into the singleton slot"
+        )
+        second.cleanup()
+
+
+# ── Story 43-5: contract checks for warm_up / render before load_model ──
+
+
+class TestPreLoadContract:
+    """`_ensure_loaded()` was removed in 43-5. `warm_up()` and `render()`
+    now raise RuntimeError (not assert — `assert` is stripped under
+    Python -O) when called before `load_model()`. These tests pin that
+    contract; without them the assertion-replacement-with-raise change
+    would have no coverage.
+    """
+
+    def test_warm_up_without_load_model_raises(
+        self, worker: ZImageMLXWorker
+    ) -> None:
+        # Worker fixture constructs but does NOT call load_model().
+        assert worker.model is None
+        with pytest.raises(RuntimeError, match="warm_up.*before load_model"):
+            worker.warm_up()
+
+    def test_render_without_load_model_raises(
+        self, worker: ZImageMLXWorker
+    ) -> None:
+        assert worker.model is None
+        with pytest.raises(RuntimeError, match="render.*before load_model"):
+            worker.render(
+                {"tier": "scene_illustration", "positive_prompt": "x"}
+            )
+
+
+# ── Story 43-5: wiring proof for load_model() callers ────────────
+
+
+_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "sidequest_daemon"
+# Canonical (and only allowed) caller of `load_model()` on an image
+# worker. `WorkerPool.warm_up_image()` lives here. Any other production
+# caller would bypass the singleton/idempotency guards.
+_ALLOWED_LOAD_MODEL_CALLER = _SOURCE_ROOT / "media" / "daemon.py"
+
+
+def test_load_model_only_called_by_workerpool() -> None:
+    """Wiring proof per daemon CLAUDE.md: `load_model()` on the image
+    worker must be invoked exclusively by `WorkerPool.warm_up_image` in
+    `sidequest_daemon/media/daemon.py`.
+
+    The pattern matches ANY `.load_model(` call site (regardless of how
+    the caller names the handle — `worker.load_model()`, `img.load_model()`,
+    `self._image.load_model()`, etc.) and also bare `load_model()` calls
+    inside the worker module itself for fully-qualified safety.
+    Excludes files that *define* `load_model()` (the worker class itself,
+    plus the unrelated EmbedWorker._load_model which is a different
+    method on a different class). The single allowed call site is the
+    canonical `_ALLOWED_LOAD_MODEL_CALLER` resolved exactly by Path
+    equality — no name-based or "media/" substring shortcuts that future
+    sibling files could accidentally match.
+    """
+    # Catch any `.load_model(` invocation (call site), not declarations.
+    # Declarations look like `def load_model(self) -> ...`; the leading
+    # `def ` excludes them.
+    call_pattern = re.compile(r"\.load_model\(")
+    def_pattern = re.compile(r"^\s*def\s+_?load_model\s*\(")
+    offenders: list[str] = []
+    for py_file in _SOURCE_ROOT.rglob("*.py"):
+        if "__pycache__" in py_file.parts:
+            continue
+        if py_file.resolve() == _ALLOWED_LOAD_MODEL_CALLER.resolve():
+            continue
+        text = py_file.read_text(encoding="utf-8")
+        for lineno, line in enumerate(text.splitlines(), start=1):
+            if def_pattern.match(line):
+                continue
+            if call_pattern.search(line):
+                rel = py_file.relative_to(_SOURCE_ROOT.parent)
+                offenders.append(f"{rel}:{lineno}: {line.strip()}")
+
+    assert offenders == [], (
+        "Found non-WorkerPool callers of `.load_model()` in the daemon "
+        "production tree — the per-process singleton invariant assumes "
+        f"`{_ALLOWED_LOAD_MODEL_CALLER.relative_to(_SOURCE_ROOT.parent)}` "
+        "is the only call site:\n" + "\n".join(offenders)
+    )

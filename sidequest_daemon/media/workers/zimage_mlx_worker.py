@@ -7,10 +7,8 @@ when run as subprocess. No LoRA support.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
-import sys
 import time
 import uuid
 from pathlib import Path
@@ -199,7 +197,22 @@ class ZImageMLXWorker:
     Migrated from `z-image` (base, 20 steps, CFG 4.0) to `z-image-turbo`
     (LCM-distilled, 8 steps, no CFG) on 2026-04-26 per the S4-PERF
     investigation. Per-render wall-clock target: ~30s (was ~108s).
+
+    **Per-process singleton invariant** (Story 43-5): only one
+    `ZImageMLXWorker` may exist per Python process. A second construction
+    raises ``RuntimeError`` to fail loudly per CLAUDE.md "No Silent
+    Fallbacks." Z-Image survives a second model on the same MPS device,
+    but Flux historically OOM'd the M3 Max instantly — the invariant is
+    here to prevent any future renderer revert from silently spawning a
+    second model. Production callers must route through
+    ``WorkerPool.warm_up_image()`` (``sidequest_daemon/media/daemon.py``),
+    which also guards via ``_image_loaded``. The conftest autouse fixture
+    resets ``ZImageMLXWorker._instance = None`` between tests.
     """
+
+    # Per-process singleton handle. Set by __init__ on first construction;
+    # raises RuntimeError on second. Tests reset to None between cases.
+    _instance: "ZImageMLXWorker | None" = None
 
     # The mflux model alias passed to ModelConfig.from_name. The string is
     # also written to OTEL spans as `model.variant` so the GM panel can
@@ -246,9 +259,17 @@ class ZImageMLXWorker:
     SCHEDULER: str = "flow_match_euler_discrete"
 
     def __init__(self, output_dir: Path) -> None:
+        if type(self)._instance is not None:
+            raise RuntimeError(
+                "ZImageMLXWorker is a per-process singleton; a second "
+                "construction would load a second model on the same MPS "
+                "device. Route through WorkerPool.warm_up_image() instead, "
+                "or reset ZImageMLXWorker._instance=None in tests."
+            )
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.model: object | None = None
+        type(self)._instance = self
 
     def load_model(self) -> None:
         """Load the configured Z-Image variant via mflux."""
@@ -269,17 +290,23 @@ class ZImageMLXWorker:
                 quantize=self.QUANTIZE,
             )
 
-    def _ensure_loaded(self) -> None:
-        if self.model is None:
-            self.load_model()
-
     def warm_up(self) -> dict:
-        """MLX graph compilation via dummy generation."""
-        self._ensure_loaded()
+        """MLX graph compilation via dummy generation.
+
+        Caller (``WorkerPool.warm_up_image()``) is contractually required
+        to invoke ``load_model()`` first. We raise rather than silently
+        lazy-load — `assert` is unsafe under Python `-O` (assertions are
+        stripped), so the check is an explicit `raise`.
+        """
+        if self.model is None:
+            raise RuntimeError(
+                "warm_up() called before load_model() — caller contract "
+                "violation. WorkerPool.warm_up_image() loads the model "
+                "before warm_up; do not call warm_up directly."
+            )
         tracer = trace.get_tracer("sidequest_daemon.media.workers.zimage_mlx_worker")
         with tracer.start_as_current_span("zimage_mlx.warm_up") as span:
             start = time.monotonic()
-            assert self.model is not None
             self.model.generate_image(  # type: ignore[attr-defined]
                 seed=0,
                 prompt="black",
@@ -328,8 +355,12 @@ class ZImageMLXWorker:
                 )
                 log.info("  prompt: %s", prompt[:150])
 
-                self._ensure_loaded()
-                assert self.model is not None
+                if self.model is None:
+                    raise RuntimeError(
+                        "render() called before load_model() — caller "
+                        "contract violation. Route through WorkerPool which "
+                        "guards via _image_loaded."
+                    )
 
                 # Z-Image Turbo's ModelConfig sets supports_guidance=False;
                 # pass guidance=None (mflux's "disabled" sentinel) when the
@@ -412,80 +443,6 @@ class ZImageMLXWorker:
     def cleanup(self) -> None:
         """Unload model, free GPU memory."""
         self.model = None
-
-
-def _respond(
-    req_id: str, *, result: dict | None = None, error: dict | None = None
-) -> None:
-    """Write a JSON response line to stdout."""
-    resp: dict = {"id": req_id}
-    if result is not None:
-        resp["result"] = result
-    if error is not None:
-        resp["error"] = error
-    print(json.dumps(resp), flush=True)
-
-
-def main() -> None:
-    """JSON-line protocol loop."""
-    import tempfile
-
-    output_dir = Path(tempfile.mkdtemp(prefix="sq-zimage-mlx-"))
-    worker = ZImageMLXWorker(output_dir)
-
-    worker.load_model()
-    worker.warm_up()
-
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-
-        try:
-            req = json.loads(line)
-            req_id = req.get("id", "unknown")
-            method = req.get("method")
-            if not method:
-                _respond(
-                    req_id,
-                    error={"code": "INVALID_REQUEST", "message": "Missing 'method'"},
-                )
-                continue
-        except json.JSONDecodeError as e:
-            _respond("unknown", error={"code": "PARSE_ERROR", "message": str(e)})
-            continue
-        params = req.get("params", {})
-
-        if method == "ping":
-            _respond(req_id, result={"status": "ok"})
-        elif method == "shutdown":
-            _respond(req_id, result={"status": "ok"})
-            worker.cleanup()
-            break
-        elif method == "render":
-            try:
-                render_result = worker.render(params)
-                _respond(req_id, result=render_result)
-            except Exception as e:
-                _respond(
-                    req_id,
-                    error={"code": "GENERATION_FAILED", "message": str(e)},
-                )
-        elif method == "warm_up":
-            try:
-                warm_result = worker.warm_up()
-                _respond(req_id, result=warm_result)
-            except Exception as e:
-                _respond(
-                    req_id,
-                    error={"code": "WARMUP_FAILED", "message": str(e)},
-                )
-        else:
-            _respond(
-                req_id,
-                error={"code": "UNKNOWN_METHOD", "message": f"Unknown: {method}"},
-            )
-
-
-if __name__ == "__main__":
-    main()
+        # Release the singleton slot so a fresh process or test fixture
+        # can construct a new worker without tripping the singleton guard.
+        type(self)._instance = None
