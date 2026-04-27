@@ -303,16 +303,6 @@ class ZImageMLXWorker:
                 if tier_name not in self.TIER_CONFIGS:
                     raise ValueError(f"Unsupported tier: {tier_name!r}")
 
-                # LoRA support is removed. Reject callers that still send it.
-                if any(
-                    k in params
-                    for k in ("lora_paths", "lora_scales", "lora_path", "lora_scale")
-                ):
-                    raise ValueError(
-                        "LoRA support has been removed from the renderer. "
-                        "Remove lora_paths/lora_scales from render params."
-                    )
-
                 tier_cfg = self.TIER_CONFIGS[tier_name]
                 prompt = self._compose_prompt(params)
                 negative_prompt = params.get("negative_prompt") or None
