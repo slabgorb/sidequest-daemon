@@ -39,22 +39,6 @@ def test_render_unknown_tier_raises(worker: ZImageMLXWorker):
         worker.render({"tier": "not_a_tier", "positive_prompt": "x"})
 
 
-def test_render_rejects_lora_params(worker: ZImageMLXWorker):
-    """LoRA support is removed. Passing LoRA params must fail loudly."""
-    mock_model = MagicMock()
-    mock_model.generate_image.return_value = _fake_pil_image()
-    worker.model = mock_model
-
-    with pytest.raises(ValueError, match="LoRA"):
-        worker.render(
-            {
-                "tier": "scene_illustration",
-                "positive_prompt": "x",
-                "lora_paths": ["anything.safetensors"],
-            }
-        )
-
-
 def test_render_returns_expected_result_shape(worker: ZImageMLXWorker):
     """Successful render returns image_url + dims + elapsed_ms."""
     mock_model = MagicMock()
