@@ -372,6 +372,38 @@ def test_eviction_order_drops_location_flourish_first(
     assert not any("CASTING" in dl for dl in result.dropped_layers)
 
 
+def test_world_style_is_in_identity_floor_not_eviction_order() -> None:
+    """Post-2026-04-29 architecture shift: the visual style system was
+    decomposed so the world (not the genre) carries the art-movement
+    lineage — Mucha for aureate_span, McQuarrie/Leone for coyote_reach.
+    The genre baseline is now neutral (universal sci-fi framing + the
+    Z-Image anti-text-bleed safety clause). If the WORLD layer is ever
+    dropped under budget pressure, generated images collapse to generic
+    photoreal CG with no styling and visible prose-bleed artifacts.
+
+    This test guards the data tables directly so a future tweak that
+    re-introduces WORLD into _EVICTION_ORDER fails immediately, before
+    a single image is rendered. Behavioral coverage of the same property
+    via integration tests is brittle — the testfixture's flourish layers
+    can absorb common overflows before WORLD is reached, and the bug
+    only surfaces in production with heavier real-world payloads."""
+    assert "ART_SENSIBILITY.WORLD" in PromptComposer._IDENTITY_FLOOR, (
+        "ART_SENSIBILITY.WORLD must be in the identity floor — it carries "
+        "the load-bearing art-movement lineage post-architecture-shift"
+    )
+    eviction_slots = [label for label, _ in PromptComposer._EVICTION_ORDER]
+    assert "ART_SENSIBILITY.WORLD" not in eviction_slots, (
+        "ART_SENSIBILITY.WORLD must not appear in the eviction order — "
+        "evicting it produces photoreal CG renders with no painterly styling. "
+        f"Current eviction order: {eviction_slots}"
+    )
+
+    # The genre layer remains in the floor too; both must be preserved
+    # because each carries half of the styling contract (genre = baseline
+    # + safety clause; world = art-movement lineage).
+    assert "ART_SENSIBILITY.GENRE" in PromptComposer._IDENTITY_FLOOR
+
+
 def test_identity_floor_breach_raises_budget_error(
     composer: PromptComposer,
 ) -> None:

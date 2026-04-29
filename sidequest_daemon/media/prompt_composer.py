@@ -50,11 +50,18 @@ def _estimate_tokens(text: str) -> int:
 
 class PromptComposer:
     # Eviction order (most-evictable → least). Identity floor is below.
+    #
+    # ART_SENSIBILITY.WORLD is NOT in this list. The visual style system
+    # was decomposed 2026-04-29 so the world (not the genre) carries the
+    # art-movement lineage — Mucha for aureate_span, McQuarrie/Leone for
+    # coyote_reach. Evicting WORLD produces photoreal CG with no painterly
+    # styling. The world layer belongs in the identity floor below; if
+    # the floor genuinely cannot fit the budget, BudgetError surfaces the
+    # real problem instead of silently degrading style.
     _EVICTION_ORDER: list[tuple[str, int]] = [
         # (slot_label, preserve_token_count)
         ("LOCATION.flourish", 8),
         ("DIRECTION_ACTION.flourish", 8),
-        ("ART_SENSIBILITY.WORLD", 0),       # drop entirely
         ("ART_SENSIBILITY.CULTURE.flourish", 12),
     ]
 
@@ -63,6 +70,7 @@ class PromptComposer:
         "CASTING",
         "DIRECTION_CAMERA",
         "ART_SENSIBILITY.GENRE",
+        "ART_SENSIBILITY.WORLD",
     }
 
     # LOD degradation ladder — ordered from richest to most minimal.
