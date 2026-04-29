@@ -1,0 +1,148 @@
+"""Tests for the `style` subcommand of sidequest-promptpreview.
+
+The `style` subcommand exists as a diagnostic that exercises ONLY the
+StyleCatalog — no character/place/recipe loading. This must work against
+worlds that lack a portrait_manifest.yaml, because that is exactly the
+case where someone reaches for the diagnostic.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from sidequest_daemon.media.preview import main
+
+FIXTURE_ROOT = (
+    Path(__file__).parent / "fixtures" / "visual_recipes" / "genre_packs"
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+REAL_PACKS = REPO_ROOT / "sidequest-content" / "genre_packs"
+
+
+def _run(argv: list[str], capsys) -> tuple[int, str, str]:
+    code = main(argv)
+    captured = capsys.readouterr()
+    return code, captured.out, captured.err
+
+
+def test_style_text_output_against_fixture(capsys, monkeypatch) -> None:
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
+    code, out, _ = _run(
+        ["style", "--genre", "testgenre", "--world", "testworld"], capsys,
+    )
+    assert code == 0
+    assert "ART_SENSIBILITY.GENRE" in out
+    assert "ART_SENSIBILITY.WORLD" in out
+    assert "ART_SENSIBILITY.CULTURE" in out
+    # Genre tokens from fixture's visual_style.yaml.
+    assert "painterly digital illustration" in out
+    # World tokens from worlds/testworld/visual_style.yaml.
+    assert "bruised amber sky" in out
+    # Culture tokens from cultures/ironhand.yaml.
+    assert "iron-chased buttons" in out
+    # Would-apply summary should concatenate all three.
+    assert "Would apply" in out
+    assert "monastic severity" in out
+
+
+def test_style_json_output_against_fixture(capsys, monkeypatch) -> None:
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
+    code, out, _ = _run(
+        ["style", "--genre", "testgenre", "--world", "testworld", "--json"],
+        capsys,
+    )
+    assert code == 0
+    payload = json.loads(out)
+    assert payload["genre"]["slug"] == "testgenre"
+    assert payload["world"]["slug"] == "testworld"
+    assert "painterly digital illustration" in payload["genre"]["tokens"]
+    assert "bruised amber sky" in payload["world"]["tokens"]
+    cultures = {c["slug"]: c for c in payload["cultures"]}
+    assert "ironhand" in cultures
+    assert "iron-chased buttons" in cultures["ironhand"]["tokens"]
+    assert "monastic severity" in payload["would_apply"]
+
+
+def test_style_world_with_no_style_file_does_not_crash(
+    tmp_path, capsys, monkeypatch,
+) -> None:
+    """Empty/missing visual_style.yaml should produce a clear message,
+    not a stack trace. Mirrors the real-world case of a freshly stubbed
+    world directory.
+    """
+    packs = tmp_path / "packs"
+    (packs / "g1" / "worlds" / "w1").mkdir(parents=True)
+    # Note: no visual_style.yaml at either level, no portrait_manifest, no cultures.
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(packs))
+
+    code, out, _ = _run(
+        ["style", "--genre", "g1", "--world", "w1"], capsys,
+    )
+    assert code == 0
+    assert "(no style" in out
+    assert "(empty — no world style)" in out
+    assert "(no cultures/ directory for this world)" in out
+    assert "(nothing — render would be styleless)" in out
+
+
+def test_style_world_without_portrait_manifest_does_not_crash(
+    tmp_path, capsys, monkeypatch,
+) -> None:
+    """Regression: previously, any preview command for a world without
+    portrait_manifest.yaml would crash with FileNotFoundError before the
+    style layers could be inspected. The `style` subcommand must NOT
+    touch CharacterCatalog / PlaceCatalog at all.
+    """
+    packs = tmp_path / "packs"
+    world_dir = packs / "g1" / "worlds" / "w1"
+    world_dir.mkdir(parents=True)
+    (packs / "g1" / "visual_style.yaml").write_text(
+        'positive_suffix: "diagnostic-genre-style-token"\n',
+    )
+    (world_dir / "visual_style.yaml").write_text(
+        'positive_suffix: "diagnostic-world-style-token"\n',
+    )
+    # Deliberately NO portrait_manifest.yaml here.
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(packs))
+
+    code, out, _ = _run(
+        ["style", "--genre", "g1", "--world", "w1"], capsys,
+    )
+    assert code == 0
+    assert "diagnostic-genre-style-token" in out
+    assert "diagnostic-world-style-token" in out
+
+
+# --- Wiring / integration --------------------------------------------------
+# Required by CLAUDE.md "Every Test Suite Needs a Wiring Test".
+# Hits the real sidequest-content tree via the entry point installed by
+# pyproject.toml.
+
+@pytest.mark.skipif(
+    not REAL_PACKS.exists(),
+    reason="sidequest-content not present (running outside orchestrator)",
+)
+def test_style_wires_into_real_caverns_and_claudes_pack(
+    capsys, monkeypatch,
+) -> None:
+    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(REAL_PACKS))
+    # mawdeep is a real C&C world that has no portrait_manifest cultures
+    # directory and no per-world visual_style — exactly the shape that
+    # would have crashed the portrait subcommand before this fix.
+    code, out, _ = _run(
+        [
+            "style",
+            "--genre", "caverns_and_claudes",
+            "--world", "mawdeep",
+        ],
+        capsys,
+    )
+    assert code == 0, f"style preview crashed: {out}"
+    # The signature C&C styling text must be present.
+    assert "Erol Otus" in out
+    assert "David Trampier" in out
+    assert "pen and ink" in out
