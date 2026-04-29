@@ -28,6 +28,7 @@ from sidequest_daemon.media.recipes import (
     LOD,
     CameraPreset,
     ComposedPrompt,
+    RenderConfigError,
     RenderTarget,
 )
 from sidequest_daemon.renderer.models import RenderTier, StageCue
@@ -166,29 +167,6 @@ def compose_prompt_for(cue: StageCue) -> ComposedPrompt:
     return composer.compose(target)
 
 
-def try_compose_prompt_for(cue: StageCue) -> ComposedPrompt | None:
-    """Best-effort compose: return the ComposedPrompt on success, or `None`
-    on any catalog miss / validation error / unknown failure.
-
-    The compose path requires structured refs (`npc:slug`, `where:scope/slug`)
-    that the server does not yet supply for every render. Wrapping the call
-    here lets the caller observe every attempt in OTEL and fall back to the
-    legacy prose-subject prompt without crashing the render. The reason is
-    logged at WARNING with the cue tier + genre/world so the GM panel can
-    distinguish "compose attempted and failed" from "compose never attempted".
-    """
-    try:
-        return compose_prompt_for(cue)
-    except Exception as exc:  # noqa: BLE001 — fallback path must not crash the daemon
-        log.warning(
-            "compose.skipped tier=%s world=%s/%s reason=%s error=%s",
-            cue.tier.value,
-            cue.metadata.get("genre", "?"),
-            cue.metadata.get("world", "?"),
-            type(exc).__name__,
-            str(exc)[:160],
-        )
-        return None
 
 
 class ZImageMLXWorker:
@@ -401,44 +379,14 @@ class ZImageMLXWorker:
                 raise
 
     def _compose_prompt(self, params: dict) -> str:
-        """Build positive prompt for Z-Image.
-
-        If the daemon dispatch loop already composed a prompt (via
-        compose_prompt_for, which pulls from the catalog-injected
-        PromptComposer), use it directly. Otherwise fall back to
-        building from raw StageCue fields.
-        """
         if params.get("positive_prompt"):
             return params["positive_prompt"]
         if params.get("prompt"):
             return params["prompt"]
-
-        tier = params.get("tier", "")
-        is_text_overlay = tier == "text_overlay"
-
-        parts: list[str] = []
-        if params.get("subject"):
-            subject = params["subject"]
-            if is_text_overlay:
-                subject = f"text reading {subject}"
-            parts.append(subject)
-        if params.get("mood"):
-            parts.append(f"{params['mood']} atmosphere")
-        if params.get("location"):
-            parts.append(f"set in {params['location']}")
-        if params.get("tags"):
-            parts.extend(params["tags"])
-
-        if is_text_overlay:
-            parts.extend(["clean typography", "readable text", "sharp lettering"])
-
-        if not parts:
-            raise ValueError(
-                "No prompt content: params has no positive_prompt, prompt, "
-                f"subject, or tags. Params: {params}"
-            )
-
-        return ", ".join(parts)
+        raise RenderConfigError(
+            "compose pipeline failed to produce a prompt; "
+            f"params keys={sorted(params.keys())}"
+        )
 
     def cleanup(self) -> None:
         """Unload model, free GPU memory."""

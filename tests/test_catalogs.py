@@ -136,10 +136,6 @@ def test_loads_world_style():
     assert "amber" in tokens
 
 
-def test_absent_world_style_returns_empty():
-    cat = StyleCatalog.load(FIXTURE_ROOT, genre="testgenre", world="testworld")
-    tokens = cat.get_world("testgenre", "no_such_world")
-    assert tokens == ""
 
 
 def test_culture_tokens_loaded():
@@ -237,36 +233,3 @@ def test_poi_without_slug_or_name_fails_loud(tmp_path) -> None:
         PlaceCatalog.load(tmp_path, genre="fail", world="world")
 
 
-def test_empty_world_positive_suffix_logs_warning(
-    tmp_path, caplog
-) -> None:
-    """Bug #2a (playtest 2026-04-26): when a world's visual_style.yaml uses
-    a legacy field name (e.g. ``style_prompt`` from grimvault) and lacks a
-    ``positive_suffix``, the StyleCatalog used to silently return empty
-    tokens. CLAUDE.md "No Silent Fallbacks" says: log loudly so the GM
-    panel and the operator see the schema-drift bug at startup rather
-    than discovering it mid-playtest as styleless renders."""
-    import logging
-
-    pack = tmp_path / "drifty"
-    (pack / "worlds" / "noisy").mkdir(parents=True)
-    (pack / "visual_style.yaml").write_text("positive_suffix: 'genre tokens'\n")
-    # World file present but uses the legacy field name — exactly the
-    # grimvault failure mode.
-    (pack / "worlds" / "noisy" / "visual_style.yaml").write_text(
-        "style_prompt: 'this used to be silently dropped'\n"
-        "negative_prompt: 'this too'\n"
-    )
-
-    with caplog.at_level(logging.WARNING, logger="sidequest_daemon.media.catalogs"):
-        cat = StyleCatalog.load(tmp_path, genre="drifty", world="noisy")
-    assert cat.get_world("drifty", "noisy") == ""
-    assert any(
-        "style_catalog.empty_positive_suffix" in record.message
-        and "scope=world" in record.message
-        and "world=noisy" in record.message
-        for record in caplog.records
-    ), (
-        f"expected loud warning for empty world positive_suffix, got: "
-        f"{[r.message for r in caplog.records]}"
-    )

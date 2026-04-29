@@ -73,57 +73,18 @@ def test_wiring_end_to_end_produces_nonempty_prompt(monkeypatch) -> None:
     assert prompt.seed != 0
 
 
-def test_try_compose_returns_prompt_on_success(monkeypatch) -> None:
-    """try_compose_prompt_for delegates to compose_prompt_for on the happy path."""
-    monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
-    cue = StageCue(
-        tier=RenderTier.PORTRAIT,
-        subject="npc:rux",
-        characters=["npc:rux"],
-        camera=CameraPreset.portrait_3q,
-        metadata={"world": "testworld", "genre": "testgenre"},
-    )
-    composed = zimage_mlx_worker.try_compose_prompt_for(cue)
-    assert composed is not None
-    assert "inquisitor" in composed.positive_prompt
-
-
-def test_try_compose_returns_none_on_validation_error(
-    monkeypatch,
-    caplog,
-) -> None:
-    """A LANDSCAPE cue with a prose subject (not a `where:` ref) raises a
-    pydantic ValidationError inside the composer; the safe wrapper must
-    catch it, emit a `compose.skipped` log line, and return None so the
-    daemon can fall back to the prose-subject prompt path."""
+def test_compose_propagates_validation_error(monkeypatch) -> None:
     monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
     cue = StageCue(
         tier=RenderTier.LANDSCAPE,
-        # Prose, not a `where:testworld/<slug>` ref → validator rejects.
         subject="A stone tavern interior with lamplight on oak beams",
         metadata={"world": "testworld", "genre": "testgenre"},
     )
-
-    import logging
-
-    with caplog.at_level(
-        logging.WARNING, logger="sidequest_daemon.media.workers.zimage_mlx_worker"
-    ):
-        composed = zimage_mlx_worker.try_compose_prompt_for(cue)
-
-    assert composed is None
-    skipped = [r for r in caplog.records if "compose.skipped" in r.getMessage()]
-    assert skipped, (
-        f"expected compose.skipped log, got {[r.getMessage() for r in caplog.records]}"
-    )
-    msg = skipped[0].getMessage()
-    assert "tier=landscape" in msg
-    assert "world=testgenre/testworld" in msg
+    with pytest.raises(Exception):
+        zimage_mlx_worker.compose_prompt_for(cue)
 
 
-def test_try_compose_returns_none_on_catalog_miss(monkeypatch, caplog) -> None:
-    """A PORTRAIT cue referencing an unknown character must be caught by the
-    safe wrapper (CatalogMissError) and logged, not propagated."""
+def test_compose_propagates_catalog_miss(monkeypatch) -> None:
     monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
     cue = StageCue(
         tier=RenderTier.PORTRAIT,
@@ -132,16 +93,10 @@ def test_try_compose_returns_none_on_catalog_miss(monkeypatch, caplog) -> None:
         camera=CameraPreset.portrait_3q,
         metadata={"world": "testworld", "genre": "testgenre"},
     )
+    from sidequest_daemon.media.recipes import CatalogMissError
 
-    import logging
-
-    with caplog.at_level(
-        logging.WARNING, logger="sidequest_daemon.media.workers.zimage_mlx_worker"
-    ):
-        composed = zimage_mlx_worker.try_compose_prompt_for(cue)
-
-    assert composed is None
-    assert any("compose.skipped" in r.getMessage() for r in caplog.records)
+    with pytest.raises(CatalogMissError):
+        zimage_mlx_worker.compose_prompt_for(cue)
 
 
 def test_build_cue_from_params_forwards_pc_descriptor() -> None:
@@ -221,10 +176,10 @@ def test_compose_with_pc_descriptor_registers_runtime_pc(monkeypatch) -> None:
     assert "hand resting on belt" in composed.positive_prompt
 
 
-def test_try_compose_succeeds_for_pc_ref_with_descriptor(monkeypatch) -> None:
-    """try_compose_prompt_for must succeed (return non-None) when the cue
-    carries a pc:<slug> ref AND a matching descriptor — the catalog miss is
-    avoided by the runtime add_pc path."""
+def test_compose_succeeds_for_pc_ref_with_descriptor(monkeypatch) -> None:
+    """compose_prompt_for must succeed when the cue carries a pc:<slug>
+    ref AND a matching descriptor — the catalog miss is avoided by the
+    runtime add_pc path."""
     monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
     cue = StageCue(
         tier=RenderTier.PORTRAIT,
@@ -242,6 +197,5 @@ def test_try_compose_succeeds_for_pc_ref_with_descriptor(monkeypatch) -> None:
             },
         },
     )
-    composed = zimage_mlx_worker.try_compose_prompt_for(cue)
-    assert composed is not None
+    composed = zimage_mlx_worker.compose_prompt_for(cue)
     assert "stoic ranger" in composed.positive_prompt

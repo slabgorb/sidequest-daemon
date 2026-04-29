@@ -167,3 +167,21 @@ class BudgetError(Exception):
     def __init__(self, message: str, breakdown: dict[str, int]) -> None:
         super().__init__(f"{message}: {breakdown}")
         self.breakdown = breakdown
+
+
+class RenderConfigError(Exception):
+    """Raised when the render pipeline is missing required configuration
+    or the compose pipeline failed to produce a usable prompt."""
+
+
+class StyleMissError(Exception):
+    """Raised when a StyleCatalog lookup or load surfaces an unrenderable
+    world or genre."""
+
+    def __init__(self, scope: str, identifier: str, reason: str) -> None:
+        super().__init__(
+            f"StyleCatalog.{scope} unrenderable for {identifier!r}: {reason}"
+        )
+        self.scope = scope
+        self.identifier = identifier
+        self.reason = reason

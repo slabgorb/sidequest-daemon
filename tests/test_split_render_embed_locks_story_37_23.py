@@ -432,7 +432,7 @@ async def _run_render_then_embed(
     import json
 
     render_reader = await _feed_reader(
-        [json.dumps({"id": "r1", "method": "render", "params": {"tier": "portrait"}}).encode() + b"\n"]
+        [json.dumps({"id": "r1", "method": "render", "params": {"tier": "portrait", "positive_prompt": "x"}}).encode() + b"\n"]
     )
     render_writer = _StubWriter()
     embed_reader = await _feed_reader(

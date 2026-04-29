@@ -67,26 +67,20 @@ def test_style_json_output_against_fixture(capsys, monkeypatch) -> None:
     assert "monastic severity" in payload["would_apply"]
 
 
-def test_style_world_with_no_style_file_does_not_crash(
+def test_style_world_with_no_style_file_raises_loud(
     tmp_path, capsys, monkeypatch,
 ) -> None:
-    """Empty/missing visual_style.yaml should produce a clear message,
-    not a stack trace. Mirrors the real-world case of a freshly stubbed
-    world directory.
-    """
+    """A world with no visual_style.yaml is unrenderable — the preview
+    must surface a StyleMissError, not soft-degrade into a styleless
+    stub display."""
+    from sidequest_daemon.media.recipes import StyleMissError
+
     packs = tmp_path / "packs"
     (packs / "g1" / "worlds" / "w1").mkdir(parents=True)
-    # Note: no visual_style.yaml at either level, no portrait_manifest, no cultures.
     monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(packs))
 
-    code, out, _ = _run(
-        ["style", "--genre", "g1", "--world", "w1"], capsys,
-    )
-    assert code == 0
-    assert "(no style" in out
-    assert "(empty — no world style)" in out
-    assert "(no cultures/ directory for this world)" in out
-    assert "(nothing — render would be styleless)" in out
+    with pytest.raises(StyleMissError):
+        _run(["style", "--genre", "g1", "--world", "w1"], capsys)
 
 
 def test_style_world_without_portrait_manifest_does_not_crash(
