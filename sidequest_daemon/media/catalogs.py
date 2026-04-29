@@ -14,6 +14,7 @@ from sidequest_daemon.media.recipes import (
     LOD,
     CatalogMissError,
     PlaceLOD,
+    StyleMissError,
 )
 
 log = logging.getLogger(__name__)
@@ -263,46 +264,45 @@ class StyleCatalog:
         world_tokens: dict[tuple[str, str], str] = {}
         culture_tokens: dict[tuple[str, str, str], str] = {}
 
-        # Genre style
         genre_style = genre_packs_root / genre / "visual_style.yaml"
-        if genre_style.exists():
-            data = yaml.safe_load(genre_style.read_text()) or {}
-            suffix = data.get("positive_suffix", "")
-            if not suffix:
-                # CLAUDE.md "No Silent Fallbacks": a present visual_style.yaml
-                # with no usable positive_suffix is almost always a schema-
-                # drift bug (e.g. legacy ``style_prompt`` / ``flux_prompt_suffix``
-                # field names that the daemon never reads). Log loudly so
-                # the GM panel can see why a render came out styleless.
-                log.warning(
-                    "style_catalog.empty_positive_suffix scope=genre genre=%s "
-                    "path=%s known_keys=%s",
-                    genre,
-                    genre_style,
-                    sorted(data.keys()),
-                )
-            genre_tokens[genre] = suffix
+        if not genre_style.exists():
+            raise StyleMissError(
+                scope="genre",
+                identifier=genre,
+                reason=f"missing visual_style.yaml at {genre_style}",
+            )
+        data = yaml.safe_load(genre_style.read_text()) or {}
+        suffix = data.get("positive_suffix", "")
+        if not suffix:
+            raise StyleMissError(
+                scope="genre",
+                identifier=genre,
+                reason=(
+                    f"empty or missing positive_suffix in {genre_style} "
+                    f"(known_keys={sorted(data.keys())})"
+                ),
+            )
+        genre_tokens[genre] = suffix
 
-        # World style
         world_style = genre_packs_root / genre / "worlds" / world / "visual_style.yaml"
-        if world_style.exists():
-            data = yaml.safe_load(world_style.read_text()) or {}
-            suffix = data.get("positive_suffix", "")
-            if not suffix:
-                # Bug #2a (playtest 2026-04-26): grimvault's visual_style.yaml
-                # used ``style_prompt`` instead of ``positive_suffix``, so
-                # world-level styling was silently dropped. Surface this as
-                # a loud warning so future drift is caught at daemon startup
-                # rather than discovered mid-playtest.
-                log.warning(
-                    "style_catalog.empty_positive_suffix scope=world "
-                    "genre=%s world=%s path=%s known_keys=%s",
-                    genre,
-                    world,
-                    world_style,
-                    sorted(data.keys()),
-                )
-            world_tokens[(genre, world)] = suffix
+        if not world_style.exists():
+            raise StyleMissError(
+                scope="world",
+                identifier=f"{genre}/{world}",
+                reason=f"missing visual_style.yaml at {world_style}",
+            )
+        data = yaml.safe_load(world_style.read_text()) or {}
+        suffix = data.get("positive_suffix", "")
+        if not suffix:
+            raise StyleMissError(
+                scope="world",
+                identifier=f"{genre}/{world}",
+                reason=(
+                    f"empty or missing positive_suffix in {world_style} "
+                    f"(known_keys={sorted(data.keys())})"
+                ),
+            )
+        world_tokens[(genre, world)] = suffix
 
         # Cultures (world-scoped — per spec)
         cultures_dir = genre_packs_root / genre / "worlds" / world / "cultures"
@@ -320,8 +320,13 @@ class StyleCatalog:
         return self._genre[genre]
 
     def get_world(self, genre: str, world: str) -> str:
-        # Absent world style is a skip-layer signal, not an error.
-        return self._world.get((genre, world), "")
+        if (genre, world) not in self._world:
+            raise StyleMissError(
+                scope="world",
+                identifier=f"{genre}/{world}",
+                reason="not present in StyleCatalog",
+            )
+        return self._world[(genre, world)]
 
     def get_culture(self, genre: str, world: str, culture: str) -> str:
         key = (genre, world, culture)

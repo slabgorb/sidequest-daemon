@@ -27,6 +27,8 @@ from pathlib import Path
 
 from opentelemetry import trace
 
+from sidequest_daemon.media.recipes import RenderConfigError
+
 SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
 PID_PATH = Path("/tmp/sidequest-renderer.pid")
 
@@ -447,38 +449,38 @@ async def _handle_client(
                             params.get("tier"),
                         )
 
-                # Compose through the catalog-injected PromptComposer when we
-                # have enough to route by world/genre. Style, camera, cast, and
-                # places are pulled from the genre pack via catalogs — the
-                # caller does not send `art_style` or `visual_tag_overrides`.
-                if (
-                    params.get("subject")
-                    and params.get("world")
-                    and params.get("genre")
-                    and not params.get("positive_prompt")
-                ):
+                composed = None
+                if not params.get("positive_prompt"):
+                    missing = [
+                        k for k in ("subject", "world", "genre") if not params.get(k)
+                    ]
+                    if missing:
+                        with tracer.start_as_current_span(
+                            "compose.gate_short_circuit"
+                        ) as gate_span:
+                            gate_span.set_attribute(
+                                "missing_fields", ",".join(missing)
+                            )
+                            gate_span.set_attribute("tier", params.get("tier", ""))
+                        raise RenderConfigError(
+                            f"render request missing required field(s): {missing}"
+                        )
+
                     from sidequest_daemon.media.workers.zimage_mlx_worker import (
                         build_cue_from_params,
-                        try_compose_prompt_for,
+                        compose_prompt_for,
                     )
 
                     cue = build_cue_from_params(params)
-
-                    # Best-effort compose. On any catalog miss or validation
-                    # failure the wrapper logs `compose.skipped` and returns
-                    # None; the daemon then falls through to the legacy
-                    # prose-subject prompt path so renders never crash on
-                    # a compose error.
-                    composed = try_compose_prompt_for(cue)
-                    if composed is not None:
-                        params["positive_prompt"] = composed.positive_prompt
-                        params["clip_prompt"] = composed.clip_prompt
-                        params["negative_prompt"] = composed.negative_prompt
-                        params["seed"] = composed.seed
-                        log.info(
-                            "prompt_composed — positive=%s",
-                            composed.positive_prompt[:150],
-                        )
+                    composed = compose_prompt_for(cue)
+                    params["positive_prompt"] = composed.positive_prompt
+                    params["clip_prompt"] = composed.clip_prompt
+                    params["negative_prompt"] = composed.negative_prompt
+                    params["seed"] = composed.seed
+                    log.info(
+                        "prompt_composed — positive=%s",
+                        composed.positive_prompt[:150],
+                    )
 
                 # Serialize renders — only one GPU operation at a time.
                 # Story 37-23: wrap dispatch in OTEL span so the GM panel can
@@ -489,6 +491,45 @@ async def _handle_client(
                     async with render_lock:
                         try:
                             result = await asyncio.to_thread(pool.render, params)
+                            with tracer.start_as_current_span(
+                                "render.completed"
+                            ) as completed:
+                                final_prompt = params.get("positive_prompt", "")
+                                completed.set_attribute(
+                                    "genre", params.get("genre", "")
+                                )
+                                completed.set_attribute(
+                                    "world", params.get("world", "")
+                                )
+                                completed.set_attribute(
+                                    "tier", params.get("tier", "")
+                                )
+                                completed.set_attribute(
+                                    "prompt_length", len(final_prompt)
+                                )
+                                genre_applied = False
+                                world_applied = False
+                                if composed is not None:
+                                    for layer in composed.layers:
+                                        tokens = layer.tokens.strip()
+                                        if not tokens:
+                                            continue
+                                        if (
+                                            layer.slot == "ART_SENSIBILITY.GENRE"
+                                            and tokens in final_prompt
+                                        ):
+                                            genre_applied = True
+                                        elif (
+                                            layer.slot == "ART_SENSIBILITY.WORLD"
+                                            and tokens in final_prompt
+                                        ):
+                                            world_applied = True
+                                completed.set_attribute(
+                                    "genre_style_applied", genre_applied
+                                )
+                                completed.set_attribute(
+                                    "world_style_applied", world_applied
+                                )
                             _write(writer, req_id, result=result)
                         except asyncio.CancelledError:
                             # Client disconnect is the most common failure mode;

@@ -12,6 +12,7 @@ from unittest.mock import MagicMock
 import pytest
 from PIL import Image
 
+from sidequest_daemon.media.recipes import RenderConfigError
 from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
 
 
@@ -85,26 +86,6 @@ def test_render_passes_negative_prompt_to_model(worker: ZImageMLXWorker):
     assert call_kwargs["seed"] == 1
 
 
-def test_compose_prompt_fallback_from_raw_fields(worker: ZImageMLXWorker):
-    """Batch scripts pass raw StageCue fields instead of positive_prompt."""
-    mock_model = MagicMock()
-    mock_model.generate_image.return_value = _fake_pil_image()
-    worker.model = mock_model
-
-    worker.render(
-        {
-            "tier": "portrait",
-            "subject": "an old knight",
-            "mood": "somber",
-            "tags": ["armor", "scarred face"],
-            "seed": 0,
-        }
-    )
-
-    called_prompt = mock_model.generate_image.call_args.kwargs["prompt"]
-    assert "an old knight" in called_prompt
-    assert "somber atmosphere" in called_prompt
-    assert "armor" in called_prompt
 
 
 def test_worker_targets_z_image_turbo(worker: ZImageMLXWorker):
@@ -143,7 +124,7 @@ def test_compose_prompt_requires_content(worker: ZImageMLXWorker):
     mock_model.generate_image.return_value = _fake_pil_image()
     worker.model = mock_model
 
-    with pytest.raises(ValueError, match="No prompt content"):
+    with pytest.raises(RenderConfigError, match="compose pipeline"):
         worker.render({"tier": "scene_illustration", "seed": 0})
 
 
