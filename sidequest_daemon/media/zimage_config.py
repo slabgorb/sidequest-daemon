@@ -57,8 +57,11 @@ _HIGH_FIDELITY_GUIDANCE: float = 4.0
 
 # Allowed fidelity values. ``Fidelity`` is a Literal alias rather than an
 # Enum so it serializes naturally over JSON-RPC (the daemon's request
-# format) without an extra encode/decode step.
+# format) without an extra encode/decode step. ``VALID_FIDELITIES`` is the
+# runtime tuple — derived from the Literal so the type annotation and the
+# runtime allowlist cannot drift apart (Story 45-39).
 Fidelity = Literal["turbo", "high_fidelity"]
+VALID_FIDELITIES: tuple[Fidelity, ...] = ("turbo", "high_fidelity")
 
 
 @dataclass(frozen=True)

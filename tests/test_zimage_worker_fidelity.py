@@ -36,37 +36,10 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
-from PIL import Image
 
 from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
-
-
-# ───── shared fixtures ─────
-
-
-def _fake_pil_image(w: int = 64, h: int = 64) -> Image.Image:
-    return Image.new("RGB", (w, h), color="black")
-
-
-@pytest.fixture
-def otel_exporter(monkeypatch):
-    """In-memory OTEL exporter — pattern matches tests/test_otel_spans.py."""
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider()
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-    monkeypatch.setattr(
-        trace,
-        "_TRACER_PROVIDER_SET_ONCE",
-        trace._TRACER_PROVIDER_SET_ONCE.__class__(),
-    )
-    trace.set_tracer_provider(provider)
-    yield exporter
-    exporter.clear()
-    provider.shutdown()
+from tests.conftest import fake_pil_image
 
 
 def _attached_mock_model(worker: ZImageMLXWorker) -> MagicMock:
@@ -78,7 +51,7 @@ def _attached_mock_model(worker: ZImageMLXWorker) -> MagicMock:
     mflux.
     """
     mock_model = MagicMock(name="ZImage")
-    mock_model.generate_image.return_value = _fake_pil_image()
+    mock_model.generate_image.return_value = fake_pil_image()
     worker.model = mock_model
     return mock_model
 
@@ -452,7 +425,7 @@ class TestWorkerPoolWiring:
         # Patch out the heavy mflux load so this stays a unit test.
         def fake_load_model(self) -> None:
             self.model = MagicMock(name="ZImageStub")
-            self.model.generate_image.return_value = _fake_pil_image()
+            self.model.generate_image.return_value = fake_pil_image()
 
         monkeypatch.setattr(ZImageMLXWorker, "load_model", fake_load_model)
         # Skip the actual warm-up generate_image call too.

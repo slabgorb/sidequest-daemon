@@ -32,6 +32,7 @@ from sidequest_daemon.media.recipes import (
     RenderTarget,
 )
 from sidequest_daemon.media.zimage_config import (
+    VALID_FIDELITIES,
     ZIMAGE_QUANTIZE,
     Fidelity,
     get_zimage_config,
@@ -39,7 +40,6 @@ from sidequest_daemon.media.zimage_config import (
 from sidequest_daemon.renderer.models import RenderTier, StageCue
 
 _FIDELITY_ENV_VAR = "SIDEQUEST_DAEMON_FIDELITY"
-_VALID_FIDELITIES: tuple[str, ...] = ("turbo", "high_fidelity")
 
 log = logging.getLogger(__name__)
 
@@ -302,10 +302,10 @@ class ZImageMLXWorker:
         fidelity strings or the worker refuses to construct.
         """
         raw = os.environ.get(_FIDELITY_ENV_VAR, "turbo")
-        if raw not in _VALID_FIDELITIES:
+        if raw not in VALID_FIDELITIES:
             raise ValueError(
                 f"{_FIDELITY_ENV_VAR}={raw!r} is not a recognised fidelity; "
-                f"expected one of {_VALID_FIDELITIES!r}. Refusing to silently "
+                f"expected one of {VALID_FIDELITIES!r}. Refusing to silently "
                 f"fall back to 'turbo' — fix the env var or unset it."
             )
         return raw  # type: ignore[return-value]
