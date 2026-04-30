@@ -28,15 +28,24 @@ def worker(tmp_path: Path) -> ZImageMLXWorker:
     return ZImageMLXWorker(output_dir=tmp_path)
 
 
-def test_tier_configs_match_render_tier_enum(worker: ZImageMLXWorker):
-    """Worker's internal tier table must cover every tier the composer emits."""
-    assert "scene_illustration" in worker.TIER_CONFIGS
-    assert "portrait" in worker.TIER_CONFIGS
-    assert "landscape" in worker.TIER_CONFIGS
-    assert "text_overlay" in worker.TIER_CONFIGS
-    assert "tactical_sketch" not in worker.TIER_CONFIGS
-    assert "fog_of_war" in worker.TIER_CONFIGS
-    assert "cartography" in worker.TIER_CONFIGS
+def test_tier_configs_match_render_tier_enum():
+    """The worker's tier dispatch must accept every tier the composer emits.
+
+    Story 45-39 removed the worker's duplicate ``TIER_CONFIGS`` dict in
+    favour of ``get_zimage_config(tier, fidelity)`` from ``zimage_config``.
+    The check is now on the canonical config table (which the worker
+    consults at render time), and a non-tier string still raises.
+    """
+    from sidequest_daemon.media.zimage_config import ZIMAGE_TIER_CONFIGS
+
+    expected = {t.value for t in ZIMAGE_TIER_CONFIGS}
+    assert "scene_illustration" in expected
+    assert "portrait" in expected
+    assert "landscape" in expected
+    assert "text_overlay" in expected
+    assert "tactical_sketch" not in expected
+    assert "fog_of_war" in expected
+    assert "cartography" in expected
 
 
 def test_render_unknown_tier_raises(worker: ZImageMLXWorker):
@@ -88,20 +97,17 @@ def test_render_passes_negative_prompt_to_model(worker: ZImageMLXWorker):
 
 
 
-def test_worker_targets_z_image_turbo(worker: ZImageMLXWorker):
-    """Lock-in: the worker is wired to Z-Image Turbo, not base Z-Image.
+def test_worker_targets_z_image_turbo_by_default(worker: ZImageMLXWorker):
+    """Lock-in: with no env var, the worker is wired to Z-Image Turbo.
 
     Guards against accidental rollback of the 2026-04-26 perf migration.
+    Story 45-39: ``MODEL_VARIANT`` became the per-instance ``model_variant``
+    derived from ``SIDEQUEST_DAEMON_FIDELITY``; the default ``"turbo"``
+    fidelity must keep the same alias and quantization.
     """
-    assert worker.MODEL_VARIANT == "z-image-turbo"
+    assert worker.fidelity == "turbo"
+    assert worker.model_variant == "z-image-turbo"
     assert worker.QUANTIZE == 8
-
-
-def test_worker_uses_8_step_turbo_preset(worker: ZImageMLXWorker):
-    """Lock-in: every tier uses the Turbo 8-step preset with guidance disabled."""
-    for tier_name, cfg in worker.TIER_CONFIGS.items():
-        assert cfg["steps"] == 8, f"{tier_name} must use 8 steps for Turbo"
-        assert cfg["guidance"] == 0.0, f"{tier_name} must disable guidance for Turbo"
 
 
 def test_render_calls_model_with_guidance_none_for_turbo(worker: ZImageMLXWorker):

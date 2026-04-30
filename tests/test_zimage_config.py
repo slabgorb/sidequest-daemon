@@ -41,22 +41,6 @@ def test_every_tier_uses_8_step_turbo_preset():
         assert cfg.guidance == 0.0, f"{tier!r} must disable guidance for Turbo"
 
 
-def test_worker_tier_configs_match_module_table():
-    """The worker's TIER_CONFIGS dict must mirror ZIMAGE_TIER_CONFIGS.
-
-    The worker subprocess can't import sidequest_daemon, so it duplicates
-    the table — this wiring test ensures the two stay in sync.
-    """
-    from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
-
-    for tier, cfg in ZIMAGE_TIER_CONFIGS.items():
-        worker_cfg = ZImageMLXWorker.TIER_CONFIGS[tier.value]
-        assert worker_cfg["steps"] == cfg.steps, f"{tier!r} steps drift"
-        assert worker_cfg["guidance"] == cfg.guidance, f"{tier!r} guidance drift"
-        assert worker_cfg["w"] == cfg.width, f"{tier!r} width drift"
-        assert worker_cfg["h"] == cfg.height, f"{tier!r} height drift"
-
-
 def test_tier_config_is_frozen():
     import dataclasses
     assert dataclasses.is_dataclass(ZImageTierConfig)
