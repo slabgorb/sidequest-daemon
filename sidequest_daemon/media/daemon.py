@@ -27,7 +27,12 @@ from pathlib import Path
 
 from opentelemetry import trace
 
-from sidequest_daemon.media.recipes import RenderConfigError
+from sidequest_daemon.media.recipes import (
+    BudgetError,
+    CatalogMissError,
+    RenderConfigError,
+    StyleMissError,
+)
 
 SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
 PID_PATH = Path("/tmp/sidequest-renderer.pid")
@@ -454,33 +459,85 @@ async def _handle_client(
                     missing = [
                         k for k in ("subject", "world", "genre") if not params.get(k)
                     ]
-                    if missing:
-                        with tracer.start_as_current_span(
-                            "compose.gate_short_circuit"
-                        ) as gate_span:
-                            gate_span.set_attribute(
-                                "missing_fields", ",".join(missing)
+                    try:
+                        if missing:
+                            with tracer.start_as_current_span(
+                                "compose.gate_short_circuit"
+                            ) as gate_span:
+                                gate_span.set_attribute(
+                                    "missing_fields", ",".join(missing)
+                                )
+                                gate_span.set_attribute(
+                                    "tier", params.get("tier", "")
+                                )
+                            raise RenderConfigError(
+                                f"render request missing required field(s): {missing}"
                             )
-                            gate_span.set_attribute("tier", params.get("tier", ""))
-                        raise RenderConfigError(
-                            f"render request missing required field(s): {missing}"
+
+                        from sidequest_daemon.media.workers.zimage_mlx_worker import (
+                            build_cue_from_params,
+                            compose_prompt_for,
                         )
 
-                    from sidequest_daemon.media.workers.zimage_mlx_worker import (
-                        build_cue_from_params,
-                        compose_prompt_for,
-                    )
-
-                    cue = build_cue_from_params(params)
-                    composed = compose_prompt_for(cue)
-                    params["positive_prompt"] = composed.positive_prompt
-                    params["clip_prompt"] = composed.clip_prompt
-                    params["negative_prompt"] = composed.negative_prompt
-                    params["seed"] = composed.seed
-                    log.info(
-                        "prompt_composed — positive=%s",
-                        composed.positive_prompt[:150],
-                    )
+                        cue = build_cue_from_params(params)
+                        composed = compose_prompt_for(cue)
+                        params["positive_prompt"] = composed.positive_prompt
+                        params["clip_prompt"] = composed.clip_prompt
+                        params["negative_prompt"] = composed.negative_prompt
+                        params["seed"] = composed.seed
+                        log.info(
+                            "prompt_composed — positive=%s",
+                            composed.positive_prompt[:150],
+                        )
+                    except (
+                        RenderConfigError,
+                        StyleMissError,
+                        CatalogMissError,
+                        BudgetError,
+                        ValueError,
+                    ) as e:
+                        # JSON-RPC contract: a render request must always get
+                        # either a result or an error frame. Compose-time
+                        # exceptions used to bubble out of `_handle_client`
+                        # (only `ConnectionResetError`/`BrokenPipeError` are
+                        # caught at the outer scope), which closed the socket
+                        # mid-request. The server then reported
+                        # `daemon.outcome=eof_before_reply` and
+                        # `daemon_unavailable` — masking the real failure
+                        # (e.g. `PlaceCatalog` rejecting a non-`where:` ref)
+                        # behind a transport error.
+                        #
+                        # Per CLAUDE.md "OTEL Observability Principle": fail
+                        # LOUD to the client, not silently to the socket.
+                        with tracer.start_as_current_span(
+                            "compose.failed"
+                        ) as fail_span:
+                            fail_span.set_attribute("tier", params.get("tier", ""))
+                            fail_span.set_attribute("error_type", type(e).__name__)
+                            fail_span.set_attribute("error_message", str(e)[:512])
+                            fail_span.set_attribute(
+                                "world", params.get("world", "")
+                            )
+                            fail_span.set_attribute(
+                                "genre", params.get("genre", "")
+                            )
+                        log.warning(
+                            "render.compose_failed — tier=%s err_type=%s err=%s",
+                            params.get("tier", ""),
+                            type(e).__name__,
+                            e,
+                        )
+                        _write(
+                            writer,
+                            req_id,
+                            error={
+                                "code": "COMPOSE_FAILED",
+                                "message": f"{type(e).__name__}: {e}",
+                                "error_type": type(e).__name__,
+                                "tier": params.get("tier", ""),
+                            },
+                        )
+                        continue
 
                 # Serialize renders — only one GPU operation at a time.
                 # Story 37-23: wrap dispatch in OTEL span so the GM panel can
