@@ -31,7 +31,15 @@ from sidequest_daemon.media.recipes import (
     RenderConfigError,
     RenderTarget,
 )
+from sidequest_daemon.media.zimage_config import (
+    VALID_FIDELITIES,
+    ZIMAGE_QUANTIZE,
+    Fidelity,
+    get_zimage_config,
+)
 from sidequest_daemon.renderer.models import RenderTier, StageCue
+
+_FIDELITY_ENV_VAR = "SIDEQUEST_DAEMON_FIDELITY"
 
 log = logging.getLogger(__name__)
 
@@ -205,48 +213,42 @@ def compose_prompt_for(cue: StageCue) -> ComposedPrompt:
 
 
 class ZImageMLXWorker:
-    """Z-Image Turbo image generation worker using Apple MLX via mflux.
+    """Z-Image image generation worker using Apple MLX via mflux.
 
-    Migrated from `z-image` (base, 20 steps, CFG 4.0) to `z-image-turbo`
-    (LCM-distilled, 8 steps, no CFG) on 2026-04-26 per the S4-PERF
-    investigation. Per-render wall-clock target: ~30s (was ~108s).
+    Story 45-39: the worker reads ``SIDEQUEST_DAEMON_FIDELITY`` at
+    construction (default ``"turbo"``) and selects its model variant +
+    tier table accordingly. ``"turbo"`` loads ``z-image-turbo`` (LCM-
+    distilled, 8 steps, no CFG) for in-session live narration latency
+    (~30s/render). ``"high_fidelity"`` loads base ``z-image`` (20 steps,
+    CFG 4.0) for genre-pack pre-gen (~108s/render) where wall-clock is
+    not the constraint. Tier parameters come from ``zimage_config``'s
+    ``get_zimage_config(tier, fidelity)`` lookup — there is no
+    duplicate-of-truth tier table on the worker class.
+
+    A render request whose ``params["fidelity"]`` is set and does not
+    match the loaded fidelity is rejected with a structured ``ValueError``
+    (CLAUDE.md "No Silent Fallbacks" — the worker can't satisfy the
+    request without silently using the wrong model).
 
     **Per-process singleton invariant** (Story 43-5): only one
     `ZImageMLXWorker` may exist per Python process. A second construction
-    raises ``RuntimeError`` to fail loudly per CLAUDE.md "No Silent
-    Fallbacks." Z-Image survives a second model on the same MPS device,
-    but Flux historically OOM'd the M3 Max instantly — the invariant is
-    here to prevent any future renderer revert from silently spawning a
-    second model. Production callers must route through
-    ``WorkerPool.warm_up_image()`` (``sidequest_daemon/media/daemon.py``),
-    which also guards via ``_image_loaded``. The conftest autouse fixture
-    resets ``ZImageMLXWorker._instance = None`` between tests.
+    raises ``RuntimeError`` to fail loudly. Z-Image survives a second
+    model on the same MPS device, but Flux historically OOM'd the M3 Max
+    instantly — the invariant is here to prevent any future renderer
+    revert from silently spawning a second model. Production callers
+    must route through ``WorkerPool.warm_up_image()``
+    (``sidequest_daemon/media/daemon.py``), which also guards via
+    ``_image_loaded``. The conftest autouse fixture resets
+    ``ZImageMLXWorker._instance = None`` between tests.
     """
 
     # Per-process singleton handle. Set by __init__ on first construction;
     # raises RuntimeError on second. Tests reset to None between cases.
     _instance: "ZImageMLXWorker | None" = None
 
-    # The mflux model alias passed to ModelConfig.from_name. The string is
-    # also written to OTEL spans as `model.variant` so the GM panel can
-    # tell turbo and base-Z-Image renders apart at a glance.
-    MODEL_VARIANT: str = "z-image-turbo"
-
-    # Tier config — KEEP IN SYNC with zimage_config.py and daemon.py IMAGE_TIERS.
-    # Turbo is distilled, so guidance is fixed at 0.0 (CFG is a no-op).
-    TIER_CONFIGS = {
-        "scene_illustration": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 768},
-        "portrait": {"steps": 8, "guidance": 0.0, "w": 768, "h": 1024},
-        "portrait_square": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
-        "landscape": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 768},
-        "text_overlay": {"steps": 8, "guidance": 0.0, "w": 768, "h": 512},
-        "cartography": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
-        "fog_of_war": {"steps": 8, "guidance": 0.0, "w": 1024, "h": 1024},
-    }
-
     # Quantization level for model loading. 8-bit per mflux's Turbo README
     # example (`--steps 9 --quantize 8`). None = full precision.
-    QUANTIZE: int | None = 8
+    QUANTIZE: int | None = ZIMAGE_QUANTIZE
 
     # Z-Image's default scheduler per its CLI.
     #
@@ -282,7 +284,31 @@ class ZImageMLXWorker:
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.model: object | None = None
+        self.fidelity: Fidelity = self._resolve_fidelity()
+        # Probe the variant via the canonical lookup so the worker stays in
+        # sync with zimage_config — the per-tier tables there all use the
+        # same model_variant within a fidelity, so any tier works as a probe.
+        self.model_variant: str = get_zimage_config(
+            RenderTier.PORTRAIT, self.fidelity
+        ).model_variant
         type(self)._instance = self
+
+    @staticmethod
+    def _resolve_fidelity() -> Fidelity:
+        """Read ``SIDEQUEST_DAEMON_FIDELITY`` and validate it loudly.
+
+        No silent fallback (CLAUDE.md). An unset env var is the explicit
+        default of ``"turbo"`` — anything else must be one of the known
+        fidelity strings or the worker refuses to construct.
+        """
+        raw = os.environ.get(_FIDELITY_ENV_VAR, "turbo")
+        if raw not in VALID_FIDELITIES:
+            raise ValueError(
+                f"{_FIDELITY_ENV_VAR}={raw!r} is not a recognised fidelity; "
+                f"expected one of {VALID_FIDELITIES!r}. Refusing to silently "
+                f"fall back to 'turbo' — fix the env var or unset it."
+            )
+        return raw  # type: ignore[return-value]
 
     def load_model(self) -> None:
         """Load the configured Z-Image variant via mflux."""
@@ -293,13 +319,14 @@ class ZImageMLXWorker:
             # new-since-2026-04-26 attribute that distinguishes turbo from
             # base — the GM panel filters on this.
             span.set_attribute("model.name", "z-image")
-            span.set_attribute("model.variant", self.MODEL_VARIANT)
+            span.set_attribute("model.variant", self.model_variant)
+            span.set_attribute("worker.fidelity", self.fidelity)
             span.set_attribute("model.quantize", self.QUANTIZE or 0)
             from mflux.models.common.config import ModelConfig
             from mflux.models.z_image.variants.z_image import ZImage
 
             self.model = ZImage(
-                model_config=ModelConfig.from_name(self.MODEL_VARIANT),
+                model_config=ModelConfig.from_name(self.model_variant),
                 quantize=self.QUANTIZE,
             )
 
@@ -340,31 +367,54 @@ class ZImageMLXWorker:
         with tracer.start_as_current_span("zimage_mlx.render") as span:
             try:
                 tier_name = params.get("tier", "")
-                if tier_name not in self.TIER_CONFIGS:
-                    raise ValueError(f"Unsupported tier: {tier_name!r}")
+                try:
+                    tier = RenderTier(tier_name)
+                except ValueError as e:
+                    raise ValueError(f"Unsupported tier: {tier_name!r}") from e
 
-                tier_cfg = self.TIER_CONFIGS[tier_name]
+                # Story 45-39: a request that names a fidelity must match
+                # the loaded one. Mismatch is a misconfiguration the worker
+                # cannot satisfy — fail loud rather than silently render
+                # with the wrong model. An omitted fidelity means "use what
+                # the daemon was launched with" (legacy callers).
+                requested_fidelity = params.get("fidelity")
+                if (
+                    requested_fidelity is not None
+                    and requested_fidelity != self.fidelity
+                ):
+                    raise ValueError(
+                        f"fidelity mismatch: daemon loaded fidelity="
+                        f"{self.fidelity!r} but request asked for "
+                        f"fidelity={requested_fidelity!r}. The worker only "
+                        f"holds one model — relaunch the daemon with "
+                        f"SIDEQUEST_DAEMON_FIDELITY={requested_fidelity!r} "
+                        f"or fix the caller."
+                    )
+
+                tier_cfg = get_zimage_config(tier, self.fidelity)
                 prompt = self._compose_prompt(params)
                 negative_prompt = params.get("negative_prompt") or None
                 seed = params.get("seed", 0)
 
-                span.set_attribute("model.variant", self.MODEL_VARIANT)
+                span.set_attribute("model.variant", self.model_variant)
+                span.set_attribute("worker.fidelity", self.fidelity)
                 span.set_attribute("render.tier", tier_name)
                 span.set_attribute("render.seed", seed)
-                span.set_attribute("render.width", tier_cfg["w"])
-                span.set_attribute("render.height", tier_cfg["h"])
-                span.set_attribute("render.steps", tier_cfg["steps"])
-                span.set_attribute("render.guidance", tier_cfg["guidance"])
+                span.set_attribute("render.width", tier_cfg.width)
+                span.set_attribute("render.height", tier_cfg.height)
+                span.set_attribute("render.steps", tier_cfg.steps)
+                span.set_attribute("render.guidance", tier_cfg.guidance)
                 span.set_attribute("render.prompt_length", len(prompt))
                 span.set_attribute("render.negative_length", len(negative_prompt or ""))
 
                 log.info(
-                    "ZIMAGE RENDER [%s] seed=%s w=%s h=%s steps=%s",
+                    "ZIMAGE RENDER [%s] fidelity=%s seed=%s w=%s h=%s steps=%s",
                     tier_name,
+                    self.fidelity,
                     seed,
-                    tier_cfg["w"],
-                    tier_cfg["h"],
-                    tier_cfg["steps"],
+                    tier_cfg.width,
+                    tier_cfg.height,
+                    tier_cfg.steps,
                 )
                 log.info("  prompt: %s", prompt[:150])
 
@@ -378,20 +428,20 @@ class ZImageMLXWorker:
                 # Z-Image Turbo's ModelConfig sets supports_guidance=False;
                 # pass guidance=None (mflux's "disabled" sentinel) when the
                 # tier guidance is 0.0 so we don't accidentally activate a
-                # CFG path on a distilled model. Base Z-Image (guidance>0)
-                # would still send the float through unchanged if reverted.
+                # CFG path on a distilled model. Base Z-Image (guidance=4.0)
+                # passes the float through to drive CFG.
                 guidance_arg: float | None = (
-                    tier_cfg["guidance"] if tier_cfg["guidance"] > 0.0 else None
+                    tier_cfg.guidance if tier_cfg.guidance > 0.0 else None
                 )
 
                 start = time.monotonic()
                 image = self.model.generate_image(  # type: ignore[attr-defined]
                     seed=seed,
                     prompt=prompt,
-                    num_inference_steps=tier_cfg["steps"],
+                    num_inference_steps=tier_cfg.steps,
                     guidance=guidance_arg,
-                    width=tier_cfg["w"],
-                    height=tier_cfg["h"],
+                    width=tier_cfg.width,
+                    height=tier_cfg.height,
                     scheduler=self.SCHEDULER,
                     negative_prompt=negative_prompt,
                 )
@@ -404,8 +454,8 @@ class ZImageMLXWorker:
 
                 return {
                     "image_url": str(image_path),
-                    "width": tier_cfg["w"],
-                    "height": tier_cfg["h"],
+                    "width": tier_cfg.width,
+                    "height": tier_cfg.height,
                     "elapsed_ms": elapsed_ms,
                 }
             except Exception as exc:
