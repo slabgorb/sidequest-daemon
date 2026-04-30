@@ -143,7 +143,7 @@ async def test_render_value_error_from_place_catalog_replies_compose_failed():
                     "tier": "scene_illustration",
                     "subject": "Sprung exploration locker in red corridor light",
                     "genre": "space_opera",
-                    "world": "coyote_reach",
+                    "world": "coyote_star",
                     "location": "Engine Bay",  # the server contract bug
                 },
             }

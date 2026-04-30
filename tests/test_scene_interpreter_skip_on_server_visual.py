@@ -115,7 +115,7 @@ async def test_server_supplied_tier_and_subject_skips_scene_interpreter():
                         "mood": "tense",
                         "tags": [],
                         "genre": "space_opera",
-                        "world": "coyote_reach",
+                        "world": "coyote_star",
                         # Narration that, pre-fix, would trigger an
                         # atmosphere rule match and rewrite tier to
                         # scene_illustration. The fix keeps server's
@@ -181,7 +181,7 @@ async def test_no_server_tier_still_runs_scene_interpreter():
                         "subject": "",
                         "tier": "",
                         "genre": "space_opera",
-                        "world": "coyote_reach",
+                        "world": "coyote_star",
                         "narration": (
                             "The dust settles. A generator coughs and "
                             "catches. Far Landing wakes around you."

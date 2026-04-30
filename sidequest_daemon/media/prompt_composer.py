@@ -54,7 +54,7 @@ class PromptComposer:
     # ART_SENSIBILITY.WORLD is NOT in this list. The visual style system
     # was decomposed 2026-04-29 so the world (not the genre) carries the
     # art-movement lineage — Mucha for aureate_span, McQuarrie/Leone for
-    # coyote_reach. Evicting WORLD produces photoreal CG with no painterly
+    # coyote_star. Evicting WORLD produces photoreal CG with no painterly
     # styling. The world layer belongs in the identity floor below; if
     # the floor genuinely cannot fit the budget, BudgetError surfaces the
     # real problem instead of silently degrading style.
