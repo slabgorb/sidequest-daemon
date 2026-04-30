@@ -4,9 +4,13 @@
 
 # --- Portrait framings ---
 portrait_3q:
-  prompt: >-
-    three-quarter view portrait, centered subject, detailed face,
-    shoulders-up framing
+  # Default portrait camera. Intentionally blank — Z-Image Turbo's
+  # natural framing instinct outperforms prescriptive camera tokens
+  # like "centered subject" (drives T-pose) and "detailed face"
+  # (pushes photorealism away from the painted style). The other
+  # portrait_* presets remain available for explicit "doing something
+  # fancy" cases (closeup, profile, full body).
+  prompt: ""
 
 portrait_profile:
   prompt: >-
