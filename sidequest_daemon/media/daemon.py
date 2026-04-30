@@ -404,18 +404,56 @@ async def _handle_client(
                             for c in gs_raw.get("characters", [])
                         ],
                     )
-                    cues = scene_interp.interpret(narrator_text, interp_state)
-                    if cues:
-                        # Use the first cue's structured data instead of raw narration
-                        top_cue = cues[0]
-                        params["subject"] = top_cue.subject
-                        params["mood"] = top_cue.mood
-                        params["tags"] = top_cue.tags
-                        params["tier"] = top_cue.tier.value
+                    # Only run rule-based interpretation when the caller did
+                    # NOT already supply a structured visual block. The
+                    # server-side narrator agent emits {tier, subject, mood,
+                    # tags} as structured output (see
+                    # sidequest-server/sidequest/agents/narrator.py — the
+                    # visual JSON block) and the dispatcher forwards those
+                    # fields verbatim. Overriding them here silently
+                    # second-guesses the agent's classification, which is
+                    # how a narrator-classified `landscape` was being
+                    # rewritten to `scene_illustration` by an atmosphere
+                    # rule match — then validated as `kind=illustration`
+                    # without the PC `participants` the server only
+                    # populates on the `tier=scene_illustration` branch.
+                    # That mis-routed shape was the playtest 2026-04-30
+                    # COMPOSE_FAILED signature.
+                    server_supplied_tier = (
+                        params.get("tier") in IMAGE_TIERS
+                        and bool(params.get("subject"))
+                    )
+                    if not server_supplied_tier:
+                        cues = scene_interp.interpret(narrator_text, interp_state)
+                        if cues:
+                            top_cue = cues[0]
+                            params["subject"] = top_cue.subject
+                            params["mood"] = top_cue.mood
+                            params["tags"] = top_cue.tags
+                            params["tier"] = top_cue.tier.value
+                            with tracer.start_as_current_span(
+                                "scene_interpreter.classified"
+                            ) as cls_span:
+                                cls_span.set_attribute("tier", top_cue.tier.value)
+                                cls_span.set_attribute("subject", top_cue.subject[:120])
+                                cls_span.set_attribute("source", "rule_match")
+                            log.info(
+                                "scene_interpreter — tier=%s subject=%s",
+                                top_cue.tier.value,
+                                top_cue.subject[:80],
+                            )
+                    else:
+                        with tracer.start_as_current_span(
+                            "scene_interpreter.skipped"
+                        ) as skip_span:
+                            skip_span.set_attribute(
+                                "reason", "server_supplied_visual_block"
+                            )
+                            skip_span.set_attribute("tier", str(params.get("tier", "")))
                         log.info(
-                            "scene_interpreter — tier=%s subject=%s",
-                            top_cue.tier.value,
-                            top_cue.subject[:80],
+                            "scene_interpreter — skipped (server tier=%s subject=%s)",
+                            params.get("tier"),
+                            str(params.get("subject", ""))[:80],
                         )
 
                     # Fall back to LLM subject extraction if SceneInterpreter
