@@ -81,6 +81,12 @@ class RenderTarget(BaseModel):
     action: str = ""
     camera: CameraPreset | None = None
 
+    # Story 45-38: render fidelity selects the Z-Image variant + step count.
+    # Default ``turbo`` keeps in-session live narration on z-image-turbo / 8 steps;
+    # ``high_fidelity`` routes pre-gen scripts to base z-image / 20 steps / CFG 4.
+    # See sidequest_daemon.media.zimage_config.get_zimage_config.
+    fidelity: Literal["turbo", "high_fidelity"] = "turbo"
+
     # Debug/preview only
     lod_override: dict[str, LOD] | None = None
 

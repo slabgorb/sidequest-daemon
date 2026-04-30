@@ -23,6 +23,20 @@ from sidequest_daemon.media.recipes import (
     PlaceLOD,
     RenderTarget,
 )
+from sidequest_daemon.media.zimage_config import get_zimage_config
+from sidequest_daemon.renderer.models import RenderTier
+
+# Story 45-38: ``RenderTarget.kind`` is portrait/poi/illustration; the
+# Z-Image config is keyed by ``RenderTier``. Map kind → a representative
+# tier so the composer can surface ``model_variant`` + ``steps`` on the
+# render.prompt_composed OTEL span. The mapping is lossy on width/height
+# (PORTRAIT_SQUARE vs PORTRAIT, CARTOGRAPHY vs LANDSCAPE) but matches on
+# the model_variant + steps axes that actually drive AC5.
+_KIND_TO_TIER: dict[str, RenderTier] = {
+    "portrait": RenderTier.PORTRAIT,
+    "poi": RenderTier.LANDSCAPE,
+    "illustration": RenderTier.SCENE_ILLUSTRATION,
+}
 
 log = logging.getLogger(__name__)
 
@@ -138,6 +152,16 @@ class PromptComposer:
             for layer in layers
         )
 
+        # Story 45-38 AC5: surface the Z-Image variant + step count on the
+        # span so the GM panel can tell turbo (in-session) and high-fidelity
+        # (pre-gen) renders apart at a glance. The composer reports the
+        # *requested* tier — the worker emits its own span with the variant
+        # actually loaded at render time, so a divergence between the two
+        # is itself diagnostic.
+        zimage_cfg = get_zimage_config(
+            _KIND_TO_TIER[target.kind], fidelity=target.fidelity,
+        )
+
         _emit_watcher_event(
             "render.prompt_composed",
             {
@@ -160,6 +184,10 @@ class PromptComposer:
                 # Lie-detector flags — see comment above.
                 "genre_style_applied": genre_layer_applied,
                 "world_style_applied": world_layer_applied,
+                # Story 45-38 AC5
+                "fidelity": target.fidelity,
+                "model_variant": zimage_cfg.model_variant,
+                "steps": zimage_cfg.steps,
             },
         )
 
