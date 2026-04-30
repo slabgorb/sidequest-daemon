@@ -8,7 +8,7 @@ Pre-fix flow:
 3. ``build_render_target`` mapped LANDSCAPE → ``kind=poi, place=cue.subject``.
 4. The pydantic validator's poi guard rejected the prose subject because
    it didn't carry a ``where:<world>/<slug>`` scheme — "poi targets must
-   reference a specific place in world 'coyote_reach'; got scope ''".
+   reference a specific place in world 'coyote_star'; got scope ''".
 5. COMPOSE_FAILED.
 
 Fix:
@@ -40,7 +40,7 @@ def _cue(*, tier: RenderTier, subject: str, characters: list[str] | None = None,
         subject=subject,
         characters=characters or [],
         location=location,
-        metadata={"world": "coyote_reach", "genre": "space_opera"},
+        metadata={"world": "coyote_star", "genre": "space_opera"},
     )
 
 
@@ -69,14 +69,14 @@ def test_landscape_with_where_scheme_subject_still_routes_to_poi():
     """
     cue = _cue(
         tier=RenderTier.LANDSCAPE,
-        subject="where:coyote_reach/far_landing",
+        subject="where:coyote_star/far_landing",
     )
     target = build_render_target(cue)
     assert target.kind == "poi", (
         f"where:-scheme LANDSCAPE must keep routing to poi, got "
         f"kind={target.kind!r}"
     )
-    assert target.place == "where:coyote_reach/far_landing"
+    assert target.place == "where:coyote_star/far_landing"
 
 
 def test_environmental_illustration_validator_accepts_empty_participants():
@@ -85,7 +85,7 @@ def test_environmental_illustration_validator_accepts_empty_participants():
     """
     target = RenderTarget(
         kind="illustration",
-        world="coyote_reach",
+        world="coyote_star",
         genre="space_opera",
         participants=[],
         action="A breaching corridor at dawn",
@@ -102,7 +102,7 @@ def test_illustration_validator_still_requires_action():
     with pytest.raises(ValidationError):
         RenderTarget(
             kind="illustration",
-            world="coyote_reach",
+            world="coyote_star",
             genre="space_opera",
             participants=[],
             action="",
@@ -117,7 +117,7 @@ def test_illustration_validator_still_requires_camera():
     with pytest.raises(ValidationError):
         RenderTarget(
             kind="illustration",
-            world="coyote_reach",
+            world="coyote_star",
             genre="space_opera",
             participants=[],
             action="A scene",
@@ -131,7 +131,7 @@ def test_illustration_with_participants_still_works_for_pc_scenes():
     """
     target = RenderTarget(
         kind="illustration",
-        world="coyote_reach",
+        world="coyote_star",
         genre="space_opera",
         participants=["pc:parsley"],
         action="Parsley negotiates with the Compact officers",

@@ -412,7 +412,7 @@ def test_eviction_order_drops_location_flourish_first(
 def test_world_style_is_in_identity_floor_not_eviction_order() -> None:
     """Post-2026-04-29 architecture shift: the visual style system was
     decomposed so the world (not the genre) carries the art-movement
-    lineage — Mucha for aureate_span, McQuarrie/Leone for coyote_reach.
+    lineage — Mucha for aureate_span, McQuarrie/Leone for coyote_star.
     The genre baseline is now neutral (universal sci-fi framing + the
     Z-Image anti-text-bleed safety clause). If the WORLD layer is ever
     dropped under budget pressure, generated images collapse to generic
