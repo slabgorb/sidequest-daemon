@@ -80,7 +80,8 @@ def build_render_target(cue: StageCue) -> RenderTarget:
     """Translate a StageCue into a RenderTarget.
 
     `cue.metadata["world"]` and `cue.metadata["genre"]` are required — fail
-    loud if either is missing.
+    loud if either is missing. ``cue.metadata["fidelity"]`` (Story 45-38)
+    is optional and defaults to ``"turbo"``.
     """
     world = cue.metadata.get("world")
     genre = cue.metadata.get("genre")
@@ -88,6 +89,7 @@ def build_render_target(cue: StageCue) -> RenderTarget:
         raise ValueError(
             "StageCue.metadata must carry `world` and `genre` for composer routing",
         )
+    fidelity = cue.metadata.get("fidelity", "turbo")
 
     if cue.tier in (RenderTier.PORTRAIT, RenderTier.PORTRAIT_SQUARE):
         character = cue.characters[0] if cue.characters else cue.subject
@@ -97,6 +99,7 @@ def build_render_target(cue: StageCue) -> RenderTarget:
             genre=genre,
             character=character,
             camera=cue.camera,
+            fidelity=fidelity,
         )
     if cue.tier == RenderTier.LANDSCAPE:
         # LANDSCAPE has two valid shapes:
@@ -121,6 +124,7 @@ def build_render_target(cue: StageCue) -> RenderTarget:
                 world=world,
                 genre=genre,
                 place=cue.subject,
+                fidelity=fidelity,
             )
         return RenderTarget(
             kind="illustration",
@@ -130,6 +134,7 @@ def build_render_target(cue: StageCue) -> RenderTarget:
             location=cue.location or cue.metadata.get("location_ref", ""),
             action=cue.subject,
             camera=cue.camera or CameraPreset.scene,
+            fidelity=fidelity,
         )
     if cue.tier == RenderTier.SCENE_ILLUSTRATION:
         return RenderTarget(
@@ -140,6 +145,7 @@ def build_render_target(cue: StageCue) -> RenderTarget:
             location=cue.location or cue.metadata.get("location_ref", ""),
             action=cue.subject,
             camera=cue.camera or CameraPreset.scene,
+            fidelity=fidelity,
         )
     raise ValueError(f"unsupported tier for composer routing: {cue.tier!r}")
 
@@ -152,6 +158,9 @@ def build_cue_from_params(params: dict) -> StageCue:
     catalog-injected compose wiring) can be tested without a live socket. The
     dispatch loop's only responsibility on top of this helper is the
     early-out conditional checking that subject/world/genre are present.
+
+    Story 45-38: ``fidelity`` rides along in metadata; ``build_render_target``
+    pulls it back out and pins it on the resulting ``RenderTarget``.
     """
     tier_str = params.get("tier", "scene_illustration")
     tier = (
@@ -162,6 +171,7 @@ def build_cue_from_params(params: dict) -> StageCue:
     metadata: dict = {
         "world": params["world"],
         "genre": params["genre"],
+        "fidelity": params.get("fidelity", "turbo"),
     }
     pc_descriptor = params.get("pc_descriptor")
     if pc_descriptor is not None:
