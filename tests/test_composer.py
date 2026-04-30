@@ -207,6 +207,43 @@ def test_location_illustration_archetypal_uses_environment_only(
     assert "hearth" in combined
 
 
+def test_location_illustration_empty_skips_layer(
+    composer: PromptComposer,
+) -> None:
+    """An illustration with no `where:` ref must NOT raise — transient
+    scenes (corridors mid-transit, breached compartments) carry their
+    setting in the action prose. Pre-fix, _resolve_location called
+    PlaceCatalog.get("") which raised ValueError("place ref '' must use
+    scheme 'where:'"). That ValueError bubbled out of _handle_client
+    uncaught and EOF'd the socket — see playtest 2026-04-30.
+    """
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["pc:hokulea"], action="prying open a sprung locker",
+        location="", camera=CameraPreset.scene,
+    )
+    layers = composer._resolve_location(t)
+    assert layers == []
+
+
+def test_location_illustration_non_where_ref_still_raises(
+    composer: PromptComposer,
+) -> None:
+    """A non-empty location ref that doesn't use the `where:` scheme is a
+    contract violation (server is shipping prose instead of a catalog
+    ref). The empty-skip path must NOT swallow this — _handle_client
+    converts it to a structured COMPOSE_FAILED reply so the GM panel sees
+    the real reason.
+    """
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=["pc:hokulea"], action="any",
+        location="Engine Bay", camera=CameraPreset.scene,
+    )
+    with pytest.raises(ValueError, match="must use scheme 'where:'"):
+        composer._resolve_location(t)
+
+
 def test_portrait_direction_action_uses_default_pose(composer: PromptComposer) -> None:
     t = RenderTarget(
         kind="portrait", world="testworld", genre="testgenre",

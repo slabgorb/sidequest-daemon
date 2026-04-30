@@ -364,6 +364,22 @@ class PromptComposer:
             ]
         if target.kind == "illustration":
             assert target.location is not None
+            # Illustrations support transient scene settings that have not
+            # been promoted into the world's PlaceCatalog (corridors mid-
+            # transit, breached compartments, ad-hoc encounters). When the
+            # caller cannot supply a `where:<slug>` ref, we skip the
+            # LOCATION layer rather than raise — the action prose carries
+            # the setting. This is documented behaviour, NOT a silent
+            # fallback: the empty-location case is the by-design path.
+            #
+            # A non-empty ref that doesn't use the `where:` scheme is a
+            # contract violation (server is shipping free-form prose
+            # instead of a catalog ref) and is allowed to surface as
+            # ValueError from PlaceCatalog.get — `_handle_client` converts
+            # those to structured `COMPOSE_FAILED` JSON-RPC errors so the
+            # GM panel sees the real reason instead of an EOF.
+            if not target.location:
+                return []
             place = self._places.get(target.location)
             lod = PlaceLOD.BACKDROP
             parts: list[str] = []

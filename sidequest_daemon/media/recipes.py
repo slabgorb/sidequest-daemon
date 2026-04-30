@@ -115,8 +115,18 @@ class RenderTarget(BaseModel):
                 raise ValueError("illustration targets require `participants`")
             if not self.action:
                 raise ValueError("illustration targets require `action`")
-            if not self.location:
-                raise ValueError("illustration targets require `location`")
+            # `location` is optional on illustrations. The original spec
+            # required a `where:<scope>/<slug>` ref, but the server has
+            # no slug-aware location tracking — it only carries free-form
+            # narrator prose ("Engine Bay", "Corridor Deck Three") that
+            # cannot be resolved against PlaceCatalog. Transient scenes
+            # (corridors mid-transit, breached compartments, ad-hoc
+            # encounters) carry their setting through the action prose
+            # and the genre/world ART_SENSIBILITY layers; they do not
+            # need a registered POI. When `location` IS supplied it must
+            # still use the `where:` scheme — `PlaceCatalog.get` enforces
+            # that downstream and surfaces a structured `COMPOSE_FAILED`
+            # error if the server ships a non-`where:` ref.
             if self.camera is None:
                 raise ValueError("illustration targets require `camera`")
         return self
