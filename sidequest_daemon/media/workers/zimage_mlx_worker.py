@@ -99,12 +99,37 @@ def build_render_target(cue: StageCue) -> RenderTarget:
             camera=cue.camera,
         )
     if cue.tier == RenderTier.LANDSCAPE:
-        # POI render: subject is a `where:` ref.
+        # LANDSCAPE has two valid shapes:
+        #   1. Explicit POI render: ``cue.subject`` is a ``where:<world>/<slug>``
+        #      ref (content-tool / poi-pregeneration path). Routes to
+        #      ``kind=poi`` so PlaceCatalog resolves the registered place.
+        #   2. Environmental scene from prose: the narrator agent emits
+        #      ``tier=landscape`` with a free-form prose subject (e.g.
+        #      "Cramped wrench-house galley under a coolant pipe...").
+        #      No registered POI exists; routing to ``kind=poi`` fails
+        #      validation ("must reference a specific place in world ...
+        #      got scope ''"). Route to ``kind=illustration`` with empty
+        #      participants — the relaxed validator (recipes.py post
+        #      playtest 2026-04-30) allows environmental illustrations.
+        #      Action prose + ART_SENSIBILITY layers carry the visual.
+        #
+        # The discriminator is the `where:` scheme — explicit refs always
+        # start with `where:` per the catalog contract; prose never does.
+        if cue.subject.startswith("where:"):
+            return RenderTarget(
+                kind="poi",
+                world=world,
+                genre=genre,
+                place=cue.subject,
+            )
         return RenderTarget(
-            kind="poi",
+            kind="illustration",
             world=world,
             genre=genre,
-            place=cue.subject,
+            participants=cue.characters,  # may be empty — environmental scene
+            location=cue.location or cue.metadata.get("location_ref", ""),
+            action=cue.subject,
+            camera=cue.camera or CameraPreset.scene,
         )
     if cue.tier == RenderTier.SCENE_ILLUSTRATION:
         return RenderTarget(

@@ -111,8 +111,21 @@ class RenderTarget(BaseModel):
                     "poi targets must not set character/participants/action",
                 )
         elif self.kind == "illustration":
-            if not self.participants:
-                raise ValueError("illustration targets require `participants`")
+            # `participants` is OPTIONAL — empty list is valid for
+            # environmental illustrations (no PCs in frame). Originally
+            # required because illustration was conceived as a
+            # "PCs-in-a-scene" kind; playtest 2026-04-30 surfaced the
+            # missing case: when the narrator emits ``tier=landscape``
+            # with prose subject (not a registered POI ``where:`` ref),
+            # there's no participants-bearing kind to route to. ``poi``
+            # demands a slug-resolvable place, ``portrait`` demands a
+            # character. The right home for "environmental scene without
+            # a registered POI" is illustration with empty participants —
+            # the action prose carries the setting, ART_SENSIBILITY
+            # layers carry the style, no PC casting layer is built.
+            # The composer's `_character_lod_plan` iterates participants
+            # and produces an empty plan when the list is empty, so this
+            # change is internally consistent end-to-end.
             if not self.action:
                 raise ValueError("illustration targets require `action`")
             # `location` is optional on illustrations. The original spec
