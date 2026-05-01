@@ -88,6 +88,40 @@ def test_illustration_four_participants_focus_long_rest_short(
         assert plan[other] == LOD.SHORT
 
 
+def test_illustration_zero_participants_returns_empty_plan(
+    composer: PromptComposer,
+) -> None:
+    """Pingpong 2026-04-30: landscape tier with no characters
+    (environmental scene, narrator-emitted prose subject — routed to
+    ``kind=illustration`` with empty participants per
+    ``zimage_mlx_worker.py:137-146``) crashed at ``participants[0]:
+    LOD.LONG`` because the n>=5 fall-through branch indexed [0]/[1]/[2]
+    unconditionally. 2 of 2 landscape dispatches in the 4P MP playtest
+    silently failed — daemon closed socket on IndexError, server logged
+    ``render.reply_unavailable``, corridor opening shot + half-landing
+    scene missing from Scrapbook for all 4 players.
+
+    Post-fix: ``n == 0`` short-circuits with an empty plan — environmental
+    illustrations have no casting layer; the prose subject + ART_SENSIBILITY
+    layers carry the visual. Mirrors the POI fall-through at the bottom
+    of ``_character_lod_plan`` (POI also has no characters in frame).
+    """
+    t = RenderTarget(
+        kind="illustration", world="testworld", genre="testgenre",
+        participants=[],  # the load-bearing repro state
+        action="A cramped wrench-house galley under coolant pipes",
+        location="where:testworld/the_lookout",
+        camera=CameraPreset.scene,
+    )
+    plan = composer._character_lod_plan(t)
+    assert plan == {}, (
+        f"Empty participants for illustration tier must return an empty "
+        f"plan, not crash with IndexError. Got: {plan!r}. If this fails "
+        "with an IndexError, the n==0 short-circuit was removed — "
+        "regression of pingpong 2026-04-30 daemon-landscape-crash."
+    )
+
+
 def test_illustration_six_participants_tail_background(
     composer: PromptComposer,
 ) -> None:

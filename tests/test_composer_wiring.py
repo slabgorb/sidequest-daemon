@@ -73,15 +73,47 @@ def test_wiring_end_to_end_produces_nonempty_prompt(monkeypatch) -> None:
     assert prompt.seed != 0
 
 
-def test_compose_propagates_validation_error(monkeypatch) -> None:
+def test_landscape_with_prose_subject_composes_without_participants(
+    monkeypatch,
+) -> None:
+    """Pingpong 2026-04-30: a landscape tier cue with a prose subject
+    (no ``where:`` prefix) and no characters must compose successfully
+    as an environmental illustration. Pre-fix this raised ``IndexError``
+    in ``_character_lod_plan`` because the n>=5 fall-through indexed
+    ``participants[0]`` unconditionally — 2 of 2 landscape dispatches
+    in the 4P MP playtest silently failed and never reached the
+    Scrapbook.
+
+    Post-fix: the n==0 short-circuit returns an empty casting plan;
+    ART_SENSIBILITY layers carry the visual. The previous version of
+    this test asserted-on-raise (``with pytest.raises(Exception):``),
+    which encoded the broken state as the desired contract — that
+    assertion was the wrong direction. Replaced with a positive
+    assertion: a non-empty positive prompt comes back, no error.
+    """
     monkeypatch.setenv("SIDEQUEST_GENRE_PACKS", str(FIXTURE_ROOT))
     cue = StageCue(
         tier=RenderTier.LANDSCAPE,
         subject="A stone tavern interior with lamplight on oak beams",
         metadata={"world": "testworld", "genre": "testgenre"},
     )
-    with pytest.raises(Exception):
-        zimage_mlx_worker.compose_prompt_for(cue)
+    prompt = zimage_mlx_worker.compose_prompt_for(cue)
+    # Environmental prose lands in the prompt's action / location text;
+    # the load-bearing assertion is that compose RETURNS rather than
+    # raising IndexError.
+    assert prompt.positive_prompt, (
+        "Environmental landscape with prose subject must produce a "
+        "non-empty positive prompt; an empty prompt would mean compose "
+        "silently degraded the environmental render."
+    )
+    # No CASTING layers expected — empty participants → empty plan.
+    casting_layers = [layer for layer in prompt.layers if layer.slot == "CASTING"]
+    assert casting_layers == [], (
+        f"Empty-participants landscape must produce no CASTING layers; "
+        f"got: {[layer.source for layer in casting_layers]}. If non-empty, "
+        "the n==0 short-circuit was bypassed and the n>=5 fall-through "
+        "fired — pingpong 2026-04-30 daemon-landscape-crash regression."
+    )
 
 
 def test_compose_propagates_catalog_miss(monkeypatch) -> None:

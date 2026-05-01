@@ -533,6 +533,34 @@ async def _handle_client(
                         CatalogMissError,
                         BudgetError,
                         ValueError,
+                        # Pingpong 2026-04-30: ``IndexError`` from
+                        # ``_character_lod_plan`` (landscape tier with
+                        # empty participants) leaked past this handler,
+                        # closing the socket mid-request — server logged
+                        # ``render.reply_unavailable error=daemon closed
+                        # socket before sending a reply``, the real
+                        # IndexError was hidden in the daemon log, and
+                        # 2 of 2 landscape dispatches silently disappeared
+                        # from the Scrapbook. Adding ``IndexError`` /
+                        # ``KeyError`` / ``AttributeError`` / ``TypeError``
+                        # (the typical "data shape unexpected" failures)
+                        # so future tier-wide compose failures emit the
+                        # ``compose.failed`` span + structured COMPOSE_FAILED
+                        # error frame instead of breaking the JSON-RPC
+                        # transport. Matches the user's pingpong note
+                        # request: "Add a daemon.compose_failed watcher
+                        # span at the daemon `_handle_client` exception
+                        # handler so future tier-wide failures show up in
+                        # the dashboard instead of /tmp/sidequest-daemon.log."
+                        # The narrower fix in prompt_composer.py prevents
+                        # this specific IndexError from firing again, but
+                        # this defense-in-depth guards the next data-shape
+                        # bug — and converts an opaque socket-close into a
+                        # GM-panel-visible event.
+                        IndexError,
+                        KeyError,
+                        AttributeError,
+                        TypeError,
                     ) as e:
                         # JSON-RPC contract: a render request must always get
                         # either a result or an error frame. Compose-time
@@ -559,6 +587,30 @@ async def _handle_client(
                             fail_span.set_attribute(
                                 "genre", params.get("genre", "")
                             )
+                        # Watcher event for the GM panel (pingpong
+                        # 2026-04-30 daemon-tier-failure ask). The
+                        # ``compose.failed`` OTEL span above is for tracer
+                        # consumers (Jaeger / OTLP); the watcher event is
+                        # the path the dashboard's Console / Subsystems
+                        # tabs read. Both fire so the failure is visible
+                        # at every observation tier.
+                        try:
+                            from sidequest_daemon.telemetry import (
+                                emit_watcher_event as _emit_compose_failure,
+                            )
+                            _emit_compose_failure(
+                                "daemon_compose_failed",
+                                {
+                                    "tier": params.get("tier", ""),
+                                    "error_type": type(e).__name__,
+                                    "error_message": str(e)[:512],
+                                    "world": params.get("world", ""),
+                                    "genre": params.get("genre", ""),
+                                    "render_id": params.get("render_id", ""),
+                                },
+                            )
+                        except Exception:  # noqa: BLE001 — telemetry must never crash the error path
+                            pass
                         log.warning(
                             "render.compose_failed — tier=%s err_type=%s err=%s",
                             params.get("tier", ""),

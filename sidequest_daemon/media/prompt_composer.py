@@ -301,6 +301,27 @@ class PromptComposer:
         if target.kind == "illustration":
             participants = list(target.participants)
             n = len(participants)
+            # Pingpong 2026-04-30: landscape tier with no characters
+            # (environmental scene, narrator-emitted prose subject —
+            # routed to ``kind=illustration`` with empty participants
+            # per ``zimage_mlx_worker.py:137-146``) crashed at
+            # ``participants[0]: LOD.LONG`` because the n>=5 fall-
+            # through branch unconditionally indexed [0]/[1]/[2].
+            # 2 of 2 landscape dispatches in the 4P MP playtest
+            # silently failed — daemon closed socket on IndexError,
+            # server logged ``render.reply_unavailable``, and the
+            # corridor opening shot + half-landing scene were missing
+            # from the Scrapbook for all 4 players.
+            #
+            # Fix: empty-participants is a legitimate state for
+            # environmental landscape illustrations — the prose
+            # subject + ART_SENSIBILITY layers carry the visual without
+            # a casting plan. Return an empty plan so ``_resolve_casting``
+            # produces zero CASTING layers and composition continues
+            # cleanly. Mirrors the POI fall-through at the bottom of
+            # this function (POI also has no characters in frame).
+            if n == 0:
+                return {}
             if n == 1:
                 return {participants[0]: LOD.SOLO}
             if n == 2:
