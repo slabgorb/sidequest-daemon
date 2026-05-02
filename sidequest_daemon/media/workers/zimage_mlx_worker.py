@@ -89,7 +89,7 @@ def build_render_target(cue: StageCue) -> RenderTarget:
 
     `cue.metadata["world"]` and `cue.metadata["genre"]` are required — fail
     loud if either is missing. ``cue.metadata["fidelity"]`` (Story 45-38)
-    is optional and defaults to ``"turbo"``.
+    is optional and defaults to ``"high_fidelity"`` (2026-05-02 flip).
     """
     world = cue.metadata.get("world")
     genre = cue.metadata.get("genre")
@@ -97,7 +97,7 @@ def build_render_target(cue: StageCue) -> RenderTarget:
         raise ValueError(
             "StageCue.metadata must carry `world` and `genre` for composer routing",
         )
-    fidelity = cue.metadata.get("fidelity", "turbo")
+    fidelity = cue.metadata.get("fidelity", "high_fidelity")
 
     if cue.tier in (RenderTier.PORTRAIT, RenderTier.PORTRAIT_SQUARE):
         character = cue.characters[0] if cue.characters else cue.subject
@@ -179,7 +179,7 @@ def build_cue_from_params(params: dict) -> StageCue:
     metadata: dict = {
         "world": params["world"],
         "genre": params["genre"],
-        "fidelity": params.get("fidelity", "turbo"),
+        "fidelity": params.get("fidelity", "high_fidelity"),
     }
     pc_descriptor = params.get("pc_descriptor")
     if pc_descriptor is not None:
@@ -216,12 +216,12 @@ class ZImageMLXWorker:
     """Z-Image image generation worker using Apple MLX via mflux.
 
     Story 45-39: the worker reads ``SIDEQUEST_DAEMON_FIDELITY`` at
-    construction (default ``"turbo"``) and selects its model variant +
-    tier table accordingly. ``"turbo"`` loads ``z-image-turbo`` (LCM-
-    distilled, 8 steps, no CFG) for in-session live narration latency
-    (~30s/render). ``"high_fidelity"`` loads base ``z-image`` (20 steps,
-    CFG 4.0) for genre-pack pre-gen (~108s/render) where wall-clock is
-    not the constraint. Tier parameters come from ``zimage_config``'s
+    construction (default ``"high_fidelity"`` post-2026-05-02) and selects
+    its model variant + tier table accordingly. ``"high_fidelity"`` loads
+    base ``z-image`` (20 steps, CFG 4.0, ~108s/render) — the new floor.
+    ``"turbo"`` loads ``z-image-turbo`` (LCM-distilled, 8 steps, no CFG,
+    ~30s/render) and is now opt-in via the env var when latency wins over
+    painterly quality. Tier parameters come from ``zimage_config``'s
     ``get_zimage_config(tier, fidelity)`` lookup — there is no
     duplicate-of-truth tier table on the worker class.
 
@@ -298,15 +298,16 @@ class ZImageMLXWorker:
         """Read ``SIDEQUEST_DAEMON_FIDELITY`` and validate it loudly.
 
         No silent fallback (CLAUDE.md). An unset env var is the explicit
-        default of ``"turbo"`` — anything else must be one of the known
-        fidelity strings or the worker refuses to construct.
+        default of ``"high_fidelity"`` (2026-05-02 flip) — anything else
+        must be one of the known fidelity strings or the worker refuses
+        to construct.
         """
-        raw = os.environ.get(_FIDELITY_ENV_VAR, "turbo")
+        raw = os.environ.get(_FIDELITY_ENV_VAR, "high_fidelity")
         if raw not in VALID_FIDELITIES:
             raise ValueError(
                 f"{_FIDELITY_ENV_VAR}={raw!r} is not a recognised fidelity; "
                 f"expected one of {VALID_FIDELITIES!r}. Refusing to silently "
-                f"fall back to 'turbo' — fix the env var or unset it."
+                f"fall back to 'high_fidelity' — fix the env var or unset it."
             )
         return raw  # type: ignore[return-value]
 

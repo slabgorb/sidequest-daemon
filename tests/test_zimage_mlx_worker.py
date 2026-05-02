@@ -97,23 +97,31 @@ def test_render_passes_negative_prompt_to_model(worker: ZImageMLXWorker):
 
 
 
-def test_worker_targets_z_image_turbo_by_default(worker: ZImageMLXWorker):
-    """Lock-in: with no env var, the worker is wired to Z-Image Turbo.
+def test_worker_targets_z_image_base_by_default(worker: ZImageMLXWorker):
+    """Lock-in: with no env var, the worker now loads base Z-Image 1.0.
 
-    Guards against accidental rollback of the 2026-04-26 perf migration.
-    Story 45-39: ``MODEL_VARIANT`` became the per-instance ``model_variant``
-    derived from ``SIDEQUEST_DAEMON_FIDELITY``; the default ``"turbo"``
-    fidelity must keep the same alias and quantization.
+    The 2026-05-02 default flip puts the painterly 20-step / CFG 4 path
+    on the floor. Turbo is still loadable via SIDEQUEST_DAEMON_FIDELITY=turbo
+    (covered by ``test_turbo_env_var_explicit_loads_turbo_model``) — this
+    test guards against accidental rollback of that flip.
     """
-    assert worker.fidelity == "turbo"
-    assert worker.model_variant == "z-image-turbo"
+    assert worker.fidelity == "high_fidelity"
+    assert worker.model_variant == "z-image"
     assert worker.QUANTIZE == 8
 
 
-def test_render_calls_model_with_guidance_none_for_turbo(worker: ZImageMLXWorker):
+def test_render_calls_model_with_guidance_none_for_turbo(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Turbo's mflux ModelConfig sets supports_guidance=False; the worker
     must pass guidance=None to generate_image so we don't accidentally drive
-    a CFG path on a distilled model."""
+    a CFG path on a distilled model.
+
+    Default flipped to high_fidelity 2026-05-02; this test opts into turbo
+    explicitly via the env var rather than the shared ``worker`` fixture.
+    """
+    monkeypatch.setenv("SIDEQUEST_DAEMON_FIDELITY", "turbo")
+    worker = ZImageMLXWorker(output_dir=tmp_path)
     mock_model = MagicMock()
     mock_model.generate_image.return_value = _fake_pil_image()
     worker.model = mock_model

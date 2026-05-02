@@ -65,15 +65,16 @@ class TestEnvVarHonoredAtInit:
     therefore an instance attribute (not a class constant) post-45-39.
     """
 
-    def test_default_fidelity_is_turbo_when_env_unset(
+    def test_default_fidelity_is_high_fidelity_when_env_unset(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """In-session live narration omits the env var → must stay on Turbo
-        for latency. Default is explicit, not silently inferred."""
+        """Default flipped to high_fidelity (2026-05-02). An unset env var
+        loads base Z-Image 1.0; Turbo is opt-in via SIDEQUEST_DAEMON_FIDELITY=turbo.
+        Default is explicit, not silently inferred."""
         monkeypatch.delenv("SIDEQUEST_DAEMON_FIDELITY", raising=False)
         worker = ZImageMLXWorker(output_dir=tmp_path)
-        assert worker.fidelity == "turbo"
-        assert worker.model_variant == "z-image-turbo"
+        assert worker.fidelity == "high_fidelity"
+        assert worker.model_variant == "z-image"
 
     def test_high_fidelity_env_var_loads_base_model(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -188,7 +189,9 @@ class TestFidelityMismatchRejection:
     def test_turbo_worker_rejects_high_fidelity_request(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("SIDEQUEST_DAEMON_FIDELITY", raising=False)
+        # Default flipped to high_fidelity 2026-05-02; set env explicitly to
+        # exercise the turbo-worker-rejects-mismatched-request path.
+        monkeypatch.setenv("SIDEQUEST_DAEMON_FIDELITY", "turbo")
         worker = ZImageMLXWorker(output_dir=tmp_path)
         _attached_mock_model(worker)
 
@@ -280,7 +283,9 @@ class TestTurboPathUnchanged:
     def test_turbo_worker_still_uses_8_steps_no_guidance(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.delenv("SIDEQUEST_DAEMON_FIDELITY", raising=False)
+        # Default flipped to high_fidelity 2026-05-02; opt in to turbo mode
+        # to verify the distilled-model 8-steps / no-guidance path persists.
+        monkeypatch.setenv("SIDEQUEST_DAEMON_FIDELITY", "turbo")
         worker = ZImageMLXWorker(output_dir=tmp_path)
         mock_model = _attached_mock_model(worker)
 
@@ -313,7 +318,9 @@ class TestOtelLoadedVariant:
         monkeypatch: pytest.MonkeyPatch,
         otel_exporter: InMemorySpanExporter,
     ) -> None:
-        monkeypatch.delenv("SIDEQUEST_DAEMON_FIDELITY", raising=False)
+        # Default flipped to high_fidelity 2026-05-02; opt in to turbo to
+        # verify the OTEL span carries the distilled-model variant.
+        monkeypatch.setenv("SIDEQUEST_DAEMON_FIDELITY", "turbo")
         worker = ZImageMLXWorker(output_dir=tmp_path)
         _attached_mock_model(worker)
 

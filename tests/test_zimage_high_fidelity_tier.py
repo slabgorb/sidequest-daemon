@@ -145,16 +145,19 @@ def test_turbo_table_unchanged_8_step_turbo_variant() -> None:
 # ───── AC1/AC3 (lookup): unified accessor picks the right variant ─────
 
 
-def test_get_zimage_config_default_fidelity_is_turbo() -> None:
-    """In-session callers (which omit the fidelity arg) keep Turbo behavior.
+def test_get_zimage_config_default_fidelity_is_high_fidelity() -> None:
+    """Default flipped to base Z-Image 1.0 (2026-05-02). Callers that omit
+    the fidelity arg get the painterly 20-step / CFG 4 path; Turbo is now
+    opt-in via ``fidelity="turbo"``.
 
-    No silent fallbacks: the default is explicit, and it is Turbo.
+    No silent fallbacks: the default is explicit, and it is high_fidelity.
     """
     from sidequest_daemon.media.zimage_config import get_zimage_config
 
     cfg = get_zimage_config(RenderTier.PORTRAIT)
-    assert cfg.model_variant == "z-image-turbo"
-    assert cfg.steps == 8
+    assert cfg.model_variant == "z-image"
+    assert cfg.steps == 20
+    assert cfg.guidance == 4.0
 
 
 def test_get_zimage_config_high_fidelity_returns_base_values() -> None:
@@ -215,11 +218,12 @@ def _capture_emitted_spans(monkeypatch) -> list[dict]:
     return emitted
 
 
-def test_render_prompt_composed_emits_model_variant_and_steps_default_turbo(
+def test_render_prompt_composed_emits_model_variant_and_steps_default_high_fidelity(
     composer: PromptComposer, monkeypatch
 ) -> None:
-    """AC5: the OTEL span for in-session (default = turbo) carries the model
-    variant and step count so the GM panel can tell tiers apart at a glance.
+    """AC5: the OTEL span for an unspecified-fidelity render (now defaulting
+    to high_fidelity post-2026-05-02) carries model variant and step count
+    so the GM panel can tell tiers apart at a glance.
     """
     emitted = _capture_emitted_spans(monkeypatch)
 
@@ -236,8 +240,8 @@ def test_render_prompt_composed_emits_model_variant_and_steps_default_turbo(
     assert "steps" in span["payload"], (
         "AC5: render.prompt_composed must include steps for GM panel"
     )
-    assert span["payload"]["model_variant"] == "z-image-turbo"
-    assert span["payload"]["steps"] == 8
+    assert span["payload"]["model_variant"] == "z-image"
+    assert span["payload"]["steps"] == 20
 
 
 def test_render_prompt_composed_emits_high_fidelity_values_when_requested(
@@ -260,13 +264,14 @@ def test_render_prompt_composed_emits_high_fidelity_values_when_requested(
     assert span["payload"]["steps"] == 20
 
 
-def test_render_target_default_fidelity_is_turbo() -> None:
-    """RenderTarget gains a fidelity field; in-session callers can omit it."""
+def test_render_target_default_fidelity_is_high_fidelity() -> None:
+    """RenderTarget default flipped to high_fidelity (2026-05-02).
+    Callers that want Turbo must pass ``fidelity="turbo"`` explicitly."""
     target = RenderTarget(
         kind="portrait", world="w", genre="g",
         character="npc:rux",
     )
-    assert target.fidelity == "turbo"
+    assert target.fidelity == "high_fidelity"
 
 
 def test_render_target_rejects_unknown_fidelity() -> None:

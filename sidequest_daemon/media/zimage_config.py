@@ -12,8 +12,13 @@ model). Step count drops from 20 → 8, yielding the targeted ~4× speedup
 Story 45-38 (2026-04-30) added a parallel **high-fidelity** table for
 genre-pack pre-gen using base Z-Image 1.0 at 20 steps + CFG 4.0. The two
 tables coexist; ``get_zimage_config(tier, fidelity)`` is the single lookup
-point for callers (composer, worker, OTEL spans). In-session live
-narration omits the fidelity arg and stays on Turbo for latency.
+point for callers (composer, worker, OTEL spans).
+
+Default flipped to **high_fidelity** 2026-05-02 — painterly base Z-Image is
+the new floor; Turbo is now opt-in via explicit ``fidelity="turbo"`` or
+``SIDEQUEST_DAEMON_FIDELITY=turbo``. Trades ~30s → ~108s per render for
+quality. The streaming-narration "narrator considers" interstitial covers
+the longer wall-clock during in-session renders.
 """
 
 from __future__ import annotations
@@ -147,14 +152,16 @@ ZIMAGE_SUPPORTED_TIERS: frozenset[RenderTier] = frozenset(ZIMAGE_TIER_CONFIGS)
 
 def get_zimage_config(
     tier: RenderTier,
-    fidelity: Fidelity = "turbo",
+    fidelity: Fidelity = "high_fidelity",
 ) -> ZImageTierConfig:
     """Return the Z-Image config for ``(tier, fidelity)``.
 
     Single lookup point so callers (composer, worker, OTEL spans, scripts)
     don't reach into the raw module-level dicts. Unknown ``fidelity``
     values raise ``ValueError`` per CLAUDE.md "No Silent Fallbacks" — the
-    only valid strings are ``"turbo"`` and ``"high_fidelity"``.
+    only valid strings are ``"turbo"`` and ``"high_fidelity"``. Default is
+    ``"high_fidelity"`` (base Z-Image 1.0); pass ``"turbo"`` explicitly to
+    use the LCM-distilled variant for latency-sensitive paths.
     """
     if fidelity == "turbo":
         return ZIMAGE_TIER_CONFIGS[tier]
