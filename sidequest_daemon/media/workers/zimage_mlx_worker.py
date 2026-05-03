@@ -15,6 +15,7 @@ from pathlib import Path
 
 from opentelemetry import trace
 
+from sidequest_daemon.media import r2_writer
 from sidequest_daemon.media.camera_specs import CameraLoader
 from sidequest_daemon.media.catalogs import (
     CharacterCatalog,
@@ -210,6 +211,40 @@ def compose_prompt_for(cue: StageCue) -> ComposedPrompt:
     return composer.compose(target)
 
 
+def upload_render_to_r2(
+    *,
+    content_bytes: bytes,
+    world_slug: str,
+    session_id: str,
+    kind: r2_writer.ArtifactKind,
+    content_type: str,
+) -> str:
+    """Thin wrapper: upload a freshly-generated render to R2, return the
+    relative key. Surfaces upload errors to the caller (no swallowing)."""
+    return r2_writer.upload_artifact(
+        world_slug=world_slug,
+        session_id=session_id,
+        kind=kind,
+        content_bytes=content_bytes,
+        content_type=content_type,
+    )
+
+
+# Map daemon RenderTier values to r2_writer ArtifactKind buckets.
+# Portrait tiers go to "portraits"; everything visual else lands under
+# "scenes". Cartography/fog-of-war are also "scenes" — they're scene-level
+# illustrations, not POIs (POIs are pre-registered places, not runtime
+# renders). r2_writer rejects unknown kinds, so the mapping table is the
+# single source of truth.
+_TIER_TO_R2_KIND: dict[str, r2_writer.ArtifactKind] = {
+    "portrait": "portraits",
+    "portrait_square": "portraits",
+    "landscape": "scenes",
+    "scene_illustration": "scenes",
+    "text_overlay": "scenes",
+    "cartography": "scenes",
+    "fog_of_war": "scenes",
+}
 
 
 class ZImageMLXWorker:
@@ -453,8 +488,45 @@ class ZImageMLXWorker:
                 image_path = self.output_dir / filename
                 image.save(str(image_path))
 
+                # Cloudflare R2 migration: upload the freshly-rendered image
+                # so the server can emit `r2_key` to clients alongside the
+                # legacy `image_url` (local disk path) during cutover.
+                # Per CLAUDE.md "No Silent Fallbacks": upload errors propagate
+                # — the daemon main loop's render error handler emits
+                # GENERATION_FAILED and the server surfaces image_unavailable.
+                #
+                # world_slug / session_id propagation: the params dict is the
+                # surface the daemon hands the worker (see
+                # ``WorkerPool.render`` in daemon.py). ``world`` is already
+                # populated by the server's render dispatch; ``session_id``
+                # is added by the daemon dispatcher in this same task. If
+                # either is missing at this point the request never matched
+                # the pre-render compose gate (which itself requires
+                # ``world``), so "unknown" is a debug fallback only — the
+                # `r2.params_missing` watcher event flags it for the GM panel.
+                world_slug = params.get("world") or "unknown"
+                session_id = params.get("session_id") or "unknown"
+                tier_value = params.get("tier", "")
+                kind = _TIER_TO_R2_KIND.get(tier_value)
+                if kind is None:
+                    raise ValueError(
+                        f"no R2 artifact-kind mapping for tier={tier_value!r}; "
+                        f"add it to _TIER_TO_R2_KIND or fix the caller."
+                    )
+                with open(image_path, "rb") as fh:
+                    content = fh.read()
+                r2_key = upload_render_to_r2(
+                    content_bytes=content,
+                    world_slug=world_slug,
+                    session_id=session_id,
+                    kind=kind,
+                    content_type="image/png",
+                )
+
                 return {
-                    "image_url": str(image_path),
+                    "image_url": str(image_path),  # legacy disk path —
+                    # still emitted for in-flight back-compat during cutover
+                    "r2_key": r2_key,
                     "width": tier_cfg.width,
                     "height": tier_cfg.height,
                     "elapsed_ms": elapsed_ms,

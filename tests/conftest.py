@@ -11,7 +11,37 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from PIL import Image
 
+from sidequest_daemon.media.workers import zimage_mlx_worker as _zimage_module
 from sidequest_daemon.media.workers.zimage_mlx_worker import ZImageMLXWorker
+
+
+@pytest.fixture(autouse=True)
+def _stub_r2_upload(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
+    """R2 cutover: ZImageMLXWorker.render() now uploads every image to
+    Cloudflare R2 before returning. The vast majority of existing worker
+    tests don't care about R2 — they care about the render result shape,
+    OTEL spans, model invocation, etc. Patching ``upload_render_to_r2`` to
+    a deterministic stub keeps those tests offline and deterministic.
+
+    Tests that exercise the real upload path opt out via the
+    ``no_r2_stub`` marker (see ``tests/media/test_zimage_worker_r2.py``).
+    """
+    if "no_r2_stub" in request.keywords:
+        return
+
+    def _fake_upload(
+        *,
+        content_bytes: bytes,
+        world_slug: str,
+        session_id: str,
+        kind,  # ArtifactKind literal
+        content_type: str,
+    ) -> str:
+        return f"artifacts/{world_slug}/{session_id}/{kind}/test.png"
+
+    monkeypatch.setattr(
+        _zimage_module, "upload_render_to_r2", _fake_upload
+    )
 
 
 @pytest.fixture(autouse=True)
