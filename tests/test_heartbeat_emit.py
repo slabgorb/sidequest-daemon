@@ -99,11 +99,21 @@ def test_worker_pool_status_carries_per_queue_state(tmp_path: Path) -> None:
 class _StubWorkerPool:
     """Minimal stand-in for ``WorkerPool`` so tests don't need real
     Z-Image weights. Reports ``warm`` for image so the daemon emits
-    ``ready`` instead of ``cold`` on connect."""
+    ``ready`` instead of ``cold`` on connect.
+
+    ``render_release`` and ``render_started`` are ``threading.Event``
+    instances (not asyncio.Event) because ``_handle_client`` runs the
+    pool's ``render`` via ``asyncio.to_thread`` — the worker is in a
+    different OS thread from the test's event loop, so the events
+    must be thread-safe. Tests interact with them via plain ``set()``
+    from the loop thread; ``threading.Event.set`` is itself
+    thread-safe."""
 
     def __init__(self) -> None:
-        self.render_release = asyncio.Event()
-        self.render_started = asyncio.Event()
+        import threading
+
+        self.render_release = threading.Event()
+        self.render_started = threading.Event()
         self.render_calls: list[dict[str, Any]] = []
 
     def status(self) -> dict[str, Any]:
@@ -123,33 +133,15 @@ class _StubWorkerPool:
         render-lock held — exactly what we need to observe a busy
         heartbeat in flight."""
         self.render_calls.append(params)
-        # Signal that we're inside the worker (lock acquired).
-        try:
-            loop = asyncio.get_event_loop_policy().get_event_loop()
-            loop.call_soon_threadsafe(self.render_started.set)
-        except Exception:
-            self.render_started.set()
-        # Block on the release event using a synchronous wait — this
-        # is a thread, not the event loop.
-        import threading
-
-        sentinel = threading.Event()
-
-        def _watch():
-            asyncio.run(self._await_release(sentinel))
-
-        threading.Thread(target=_watch, daemon=True).start()
-        sentinel.wait(timeout=5.0)
+        self.render_started.set()
+        if not self.render_release.wait(timeout=5.0):
+            raise TimeoutError("render_release was never set")
         return {
             "image_url": "/tmp/x.png",
             "width": 64,
             "height": 64,
             "elapsed_ms": 1,
         }
-
-    async def _await_release(self, sentinel) -> None:  # noqa: ANN001
-        await self.render_release.wait()
-        sentinel.set()
 
     def embed(self, text: str) -> list[float]:
         return [0.0, 0.0, 0.0]
@@ -226,7 +218,14 @@ async def test_render_emits_ready_busy_ready_heartbeats(short_sock: Path) -> Non
             await writer.drain()
 
             # Wait for the worker thread to enter render(), then release.
-            await asyncio.wait_for(pool.render_started.wait(), timeout=2.0)
+            # ``render_started`` is a threading.Event — poll on the loop
+            # so we don't block the event loop while the worker thread
+            # acquires the GIL.
+            for _ in range(200):
+                if pool.render_started.is_set():
+                    break
+                await asyncio.sleep(0.01)
+            assert pool.render_started.is_set(), "worker never entered render()"
             # Brief pause so the daemon has a chance to flush the
             # busy heartbeat onto the wire before we release.
             await asyncio.sleep(0.05)

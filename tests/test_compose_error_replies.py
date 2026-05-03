@@ -36,6 +36,13 @@ class _RecordingWriter:
     def write(self, data: bytes) -> None:
         self.chunks.append(data)
 
+    async def drain(self) -> None:
+        # Heartbeat emission (story 45-31) calls drain() after writing
+        # the per-queue heartbeat line on connection accept. The real
+        # StreamWriter blocks until the kernel buffer drains; in the
+        # in-memory recorder we just track that drain was called.
+        return None
+
     def get_extra_info(self, key: str) -> str:
         return "test-peer"
 
@@ -47,10 +54,20 @@ class _RecordingWriter:
 
     @property
     def replies(self) -> list[dict]:
+        """Return JSON-RPC reply frames only. Story 45-31 added per-queue
+        heartbeat lines on connection accept that share the wire with
+        replies; filter them out so existing tests reason about replies
+        in isolation."""
         joined = b"".join(self.chunks).decode()
-        return [
-            json.loads(line) for line in joined.splitlines() if line.strip()
-        ]
+        out: list[dict] = []
+        for line in joined.splitlines():
+            if not line.strip():
+                continue
+            obj = json.loads(line)
+            if obj.get("event") == "heartbeat":
+                continue
+            out.append(obj)
+        return out
 
 
 @pytest.mark.asyncio
