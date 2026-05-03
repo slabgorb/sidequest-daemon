@@ -484,10 +484,17 @@ async def test_heartbeat_lines_do_not_corrupt_reply_parsing(short_sock: Path) ->
     )
 
     # AC6: the two shapes are mutually exclusive — a line cannot be
-    # both. Catches a hybrid that breaks naive parsers.
+    # both. Catches a hybrid that breaks naive parsers. Each side must
+    # be checked independently: a heartbeat carrying *either* `id` or
+    # `result` is a hybrid that fails the mutual-exclusion contract,
+    # not just one carrying both. (Review M3 — `or` here was a vacuous
+    # logic bug; replaced with two independent asserts.)
     for h in heartbeats:
-        assert "id" not in h or "result" not in h, (
-            f"AC6: heartbeat line contains reply-shaped fields: {h}"
+        assert "id" not in h, (
+            f"AC6: heartbeat line carries reply field 'id': {h}"
+        )
+        assert "result" not in h, (
+            f"AC6: heartbeat line carries reply field 'result': {h}"
         )
     for r in replies:
         assert "event" not in r, (

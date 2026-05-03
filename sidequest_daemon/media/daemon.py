@@ -119,7 +119,9 @@ _IN_FLIGHT_COUNTS: dict[str, int] = {"image": 0, "embed": 0}
 def _make_heartbeat(queue: str, state: str, queue_depth: int) -> dict:
     """Build a heartbeat event payload with ``ts_monotonic`` stamped at
     emit time. Centralized so the schema does not drift across the
-    five emission sites."""
+    six per-connection emission sites (accept × 2 queues, render-lock
+    acquire/release, embed-lock acquire/release) plus the periodic
+    emitter."""
     return {
         "event": "heartbeat",
         "queue": queue,
@@ -149,15 +151,19 @@ async def start_periodic_heartbeat(
 ) -> None:
     """Periodic ready-heartbeat emitter — long-running coroutine.
 
-    Wired into ``_run_daemon``'s asyncio loop. With no work in flight
-    the daemon's per-connection emission stays silent for stretches
-    longer than the heartbeat window; this loop publishes a "still
-    alive" signal so the server-side mirror does not mistake quiet
-    work for a dead daemon.
+    **NOT YET WIRED INTO ``_run_daemon``** (review H2 follow-up). The
+    coroutine is defined and unit-tested in isolation (AC2). Production
+    wiring of a broadcast emit (one that fans out to every active
+    client writer) is a follow-up. Until that lands, liveness is kept
+    fresh by:
+    - per-request heartbeats on every render/embed connection;
+    - the server-side ``DaemonClient.heartbeat_listener`` reconnecting
+      every ~15s (4× safety margin under the 60s unresponsive
+      threshold).
 
     :param interval_seconds: Seconds between emits (default 30s; tests
         use a much smaller value).
-    :param emit: Where the heartbeat goes. Production wires this to a
+    :param emit: Where the heartbeat goes. When wired, this will be a
         broadcast helper that fans out to every active client writer.
         Tests pass an in-memory recorder. ``None`` → no-op.
     """
@@ -287,8 +293,6 @@ class WorkerPool:
                 "warmup_ms": 0,
                 "model": "all-MiniLM-L6-v2",
             }
-        import time
-
         start = time.monotonic()
         log.info("Loading SentenceTransformer all-MiniLM-L6-v2 on CPU...")
         self._embed = EmbedWorker()
@@ -333,11 +337,12 @@ class WorkerPool:
     def status(self) -> dict:
         """Return current worker status.
 
-        Story 45-31: ``queue_states`` is the per-queue dispatcher state
-        (ready/busy/paused/cold). Distinct from the legacy
-        ``image``/``embed`` keys which report model-load status
-        ("warm" vs. "cold"). The mirror reads ``queue_states``; the
-        legacy keys remain for any code that still consults them.
+        Story 45-31: ``queue_states`` is provided for diagnostic
+        consumers (GM panel, ``/health``-style introspection); the
+        server-side ``DaemonStateMirror`` is populated from
+        per-connection heartbeat events, NOT from this field. Distinct
+        from the legacy ``image``/``embed`` keys which report
+        model-load status ("warm" vs. "cold").
         """
         image_loaded = self._image_loaded
         embed_loaded = self._embed_loaded
@@ -880,8 +885,6 @@ async def _handle_client(
                         except (ConnectionResetError, BrokenPipeError):
                             pass
                         try:
-                            import time
-
                             start = time.monotonic()
                             embedding = await asyncio.to_thread(pool.embed, text)
                             latency_ms = int((time.monotonic() - start) * 1000)

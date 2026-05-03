@@ -24,11 +24,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
+
+from sidequest_daemon.media.daemon import (
+    EmbedWorker,
+    WorkerPool,
+    _handle_client,
+)
+
 
 def _first_reply(responses: list[bytes]) -> bytes:
     """Return the first non-heartbeat reply line. Story 45-31
@@ -41,13 +47,6 @@ def _first_reply(responses: list[bytes]) -> bytes:
             continue
         return raw
     raise AssertionError("no non-heartbeat reply found")
-
-
-from sidequest_daemon.media.daemon import (
-    EmbedWorker,
-    WorkerPool,
-    _handle_client,
-)
 
 
 # ============================================================
