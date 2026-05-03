@@ -8,11 +8,26 @@ from __future__ import annotations
 
 import hashlib
 import os
+import time
 from functools import lru_cache
 from typing import Final, Literal
 
 import boto3
 from botocore.client import BaseClient
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
+
+# Test seam — overridden via patch.object in unit tests to inject an
+# in-memory exporter. Production: read the global tracer provider.
+_tracer_provider_for_tests: TracerProvider | None = None
+
+
+def _get_tracer() -> trace.Tracer:
+    if _tracer_provider_for_tests is not None:
+        return _tracer_provider_for_tests.get_tracer(
+            "sidequest_daemon.media.r2_writer"
+        )
+    return trace.get_tracer("sidequest_daemon.media.r2_writer")
 
 ArtifactKind = Literal["portraits", "poi", "scenes", "music", "sfx"]
 _VALID_KINDS: Final[frozenset[str]] = frozenset(
@@ -73,12 +88,36 @@ def upload_artifact(
     ext = _EXT_FOR_CONTENT_TYPE[content_type]
     sha = hashlib.sha256(content_bytes).hexdigest()
     key = f"artifacts/{world_slug}/{session_id}/{kind}/{sha}.{ext}"
+    size = len(content_bytes)
+    tracer = _get_tracer()
 
-    _client().put_object(
-        Bucket=BUCKET,
-        Key=key,
-        Body=content_bytes,
-        ContentType=content_type,
-        CacheControl=CACHE_CONTROL_ARTIFACTS,
-    )
+    with tracer.start_as_current_span("daemon.r2.upload.start") as start_span:
+        start_span.set_attribute("upload.kind", kind)
+        start_span.set_attribute("upload.world", world_slug)
+        start_span.set_attribute("upload.session", session_id)
+        start_span.set_attribute("upload.bytes", size)
+
+    t0 = time.perf_counter()
+    try:
+        _client().put_object(
+            Bucket=BUCKET,
+            Key=key,
+            Body=content_bytes,
+            ContentType=content_type,
+            CacheControl=CACHE_CONTROL_ARTIFACTS,
+        )
+    except Exception as exc:
+        with tracer.start_as_current_span("daemon.r2.upload.failure") as fail_span:
+            fail_span.set_attribute("upload.kind", kind)
+            fail_span.set_attribute("upload.error_class", exc.__class__.__name__)
+            fail_span.set_attribute("upload.error_message", str(exc))
+            fail_span.set_attribute("upload.retry_attempt", 0)
+        raise
+
+    dt_ms = int((time.perf_counter() - t0) * 1000)
+    with tracer.start_as_current_span("daemon.r2.upload.success") as ok_span:
+        ok_span.set_attribute("upload.kind", kind)
+        ok_span.set_attribute("upload.key", key)
+        ok_span.set_attribute("upload.ms", dt_ms)
+        ok_span.set_attribute("upload.bytes", size)
     return key
