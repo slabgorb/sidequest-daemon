@@ -44,3 +44,6 @@ training = [
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "no_r2_stub: opt out of the conftest autouse stub for upload_render_to_r2 (used by tests that exercise the real R2 helper or its underlying upload_artifact wiring)",
+]

@@ -648,6 +648,19 @@ async def _handle_client(
                                 completed.set_attribute(
                                     "world", params.get("world", "")
                                 )
+                                # R2 migration: surface session_id and the
+                                # uploaded r2_key on render.completed so the
+                                # GM panel can verify the artifact landed.
+                                # Empty session_id at this point means the
+                                # server didn't thread it through — the
+                                # worker fell back to "unknown" and the GM
+                                # panel can flag it.
+                                completed.set_attribute(
+                                    "session_id", params.get("session_id", "")
+                                )
+                                completed.set_attribute(
+                                    "r2_key", str(result.get("r2_key") or "")
+                                )
                                 completed.set_attribute(
                                     "tier", params.get("tier", "")
                                 )
