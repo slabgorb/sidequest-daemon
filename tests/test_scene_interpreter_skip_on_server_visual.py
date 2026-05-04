@@ -40,6 +40,11 @@ class _RecordingWriter:
     def write(self, data: bytes) -> None:
         self.chunks.append(data)
 
+    async def drain(self) -> None:
+        # Story 45-31: heartbeat emission calls writer.drain after
+        # writing the per-queue heartbeat line on connect.
+        return None
+
     def get_extra_info(self, key: str) -> str:
         return "test-peer"
 
@@ -53,7 +58,10 @@ class _RecordingWriter:
     def replies(self) -> list[dict]:
         joined = b"".join(self.chunks).decode()
         return [
-            json.loads(line) for line in joined.splitlines() if line.strip()
+            json.loads(line)
+            for line in joined.splitlines()
+            if line.strip()
+            and json.loads(line).get("event") != "heartbeat"
         ]
 
 

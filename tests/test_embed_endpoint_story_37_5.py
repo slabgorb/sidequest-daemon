@@ -24,9 +24,8 @@ from __future__ import annotations
 
 import asyncio
 import json
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -35,6 +34,19 @@ from sidequest_daemon.media.daemon import (
     WorkerPool,
     _handle_client,
 )
+
+
+def _first_reply(responses: list[bytes]) -> bytes:
+    """Return the first non-heartbeat reply line. Story 45-31
+    interleaves heartbeat events with replies on the same writer; the
+    embed-endpoint contract is about the embed reply, not the
+    heartbeats."""
+    for raw in responses:
+        obj = json.loads(raw.decode())
+        if obj.get("event") == "heartbeat":
+            continue
+        return raw
+    raise AssertionError("no non-heartbeat reply found")
 
 
 # ============================================================
@@ -253,13 +265,16 @@ class TestEmbedSocketRoundTrip:
         async def noop():
             pass
         writer.wait_closed = noop
+        # Story 45-31: heartbeat emission calls writer.drain — make it
+        # an awaitable no-op so the handler doesn't crash.
+        writer.drain = noop
 
         render_lock = asyncio.Lock()
         embed_lock = asyncio.Lock()
         await _handle_client(reader, writer, pool_with_mock_embed, render_lock, embed_lock)
 
         assert len(responses) >= 1, "Handler must write at least one response"
-        resp = json.loads(responses[0].decode())
+        resp = json.loads(_first_reply(responses).decode())
         assert resp["id"] == "test-embed-1"
         assert "result" in resp, f"Expected 'result' in response, got: {resp}"
         assert "error" not in resp or resp["error"] is None
@@ -292,13 +307,14 @@ class TestEmbedSocketRoundTrip:
         async def _noop():
             pass
         writer.wait_closed = _noop
+        writer.drain = _noop
 
         render_lock = asyncio.Lock()
         embed_lock = asyncio.Lock()
         await _handle_client(reader, writer, pool_with_mock_embed, render_lock, embed_lock)
 
         assert len(responses) >= 1
-        resp = json.loads(responses[0].decode())
+        resp = json.loads(_first_reply(responses).decode())
         assert "error" in resp
         assert resp["error"]["code"] == "INVALID_REQUEST"
         assert len(resp["error"]["message"]) > 0
@@ -333,13 +349,14 @@ class TestEmbedSocketRoundTrip:
         async def _noop():
             pass
         writer.wait_closed = _noop
+        writer.drain = _noop
 
         render_lock = asyncio.Lock()
         embed_lock = asyncio.Lock()
         await _handle_client(reader, writer, pool, render_lock, embed_lock)
 
         assert len(responses) >= 1
-        resp = json.loads(responses[0].decode())
+        resp = json.loads(_first_reply(responses).decode())
         assert "error" in resp
         error = resp["error"]
         assert error["code"] == "EMBED_FAILED", (
