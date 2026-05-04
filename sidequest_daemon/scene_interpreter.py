@@ -12,15 +12,15 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-log = logging.getLogger(__name__)
-
 from sidequest_daemon.media.recipes import CameraPreset
 from sidequest_daemon.renderer.models import RenderTier, StageCue
 
 if TYPE_CHECKING:
-    from sidequest_daemon.types import DocumentEvent, GameState
     from sidequest_daemon.genre.models import GenrePack
     from sidequest_daemon.media.subject_extractor import SubjectExtractor
+    from sidequest_daemon.types import DocumentEvent, GameState
+
+log = logging.getLogger(__name__)
 
 _MAX_CUES = 2
 
