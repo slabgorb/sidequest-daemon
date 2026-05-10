@@ -7,6 +7,7 @@ of the codebase doesn't depend on it directly. Two responsibilities:
    require a pinned seed) — see `prepare_inference_params`.
 2. Run inference and return the WAV path + seed used — see `AceStepAdapter.run`.
 """
+
 from __future__ import annotations
 
 import json
@@ -52,4 +53,25 @@ class InferenceResult:
 
 
 class AceStepAdapter:
-    """Implemented in Task 4."""
+    """Lazy-loaded wrapper over `acestep.pipeline_ace_step.ACEStepPipeline`.
+
+    Inject `_pipeline` in tests to avoid loading the real model. In prod,
+    `_pipeline` is None on construction and lazy-loads on first `run()`.
+    """
+
+    def __init__(self, *, _pipeline: Any | None = None) -> None:
+        self._pipeline = _pipeline
+
+    def _ensure_loaded(self) -> Any:
+        if self._pipeline is None:
+            from acestep.pipeline_ace_step import ACEStepPipeline
+
+            self._pipeline = ACEStepPipeline()
+            log.info("ACE-Step pipeline loaded (cold start)")
+        return self._pipeline
+
+    def run(self, json_path: Path, output_wav: Path) -> InferenceResult:
+        params = prepare_inference_params(json_path, output_wav)
+        pipeline = self._ensure_loaded()
+        pipeline(**params)
+        return InferenceResult(wav_path=output_wav, seed=params["actual_seeds"][0])
