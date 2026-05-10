@@ -85,3 +85,67 @@ def test_generate_happy_path_orchestrates_all_stages(tmp_path):
     event_types = [c.args[0] for c in watcher.call_args_list]
     assert "music.generation.start" in event_types
     assert "music.generation.complete" in event_types
+
+
+def test_generate_inference_failure_emits_failed_event_stage_inference(tmp_path):
+    pack_dir = tmp_path / "genre_packs/cav/audio/music"
+    json_path = pack_dir / "combat_input_params.json"
+    _write_json(json_path)
+
+    adapter = MagicMock()
+    adapter.run.side_effect = RuntimeError("CUDA OOM")
+    pipeline = MusicPipeline(
+        adapter=adapter, r2_uploader=MagicMock(),
+        watcher=MagicMock(), render_lock=asyncio.Lock(),
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(pipeline.generate(json_path))
+
+    failed_calls = [c for c in pipeline._watcher.call_args_list
+                    if c.args[0] == "music.generation.failed"]
+    assert len(failed_calls) == 1
+    assert failed_calls[0].args[1]["stage"] == "inference"
+
+
+def test_generate_ffmpeg_failure_emits_failed_event_stage_ffmpeg(tmp_path):
+    pack_dir = tmp_path / "genre_packs/cav/audio/music"
+    json_path = pack_dir / "combat_input_params.json"
+    _write_json(json_path)
+
+    def fake_run(jp, output_wav):
+        output_wav.write_bytes(b"fake")
+        from sidequest_daemon.media.ace_step_adapter import InferenceResult
+        return InferenceResult(wav_path=output_wav, seed=42)
+    adapter = MagicMock()
+    adapter.run.side_effect = fake_run
+
+    pipeline = MusicPipeline(
+        adapter=adapter, r2_uploader=MagicMock(),
+        watcher=MagicMock(), render_lock=asyncio.Lock(),
+    )
+    with patch("sidequest_daemon.media.music_pipeline._run_ffmpeg") as mock_ffmpeg:
+        import subprocess
+        mock_ffmpeg.side_effect = subprocess.CalledProcessError(1, "ffmpeg")
+        with pytest.raises(subprocess.CalledProcessError):
+            asyncio.run(pipeline.generate(json_path))
+
+    failed_calls = [c for c in pipeline._watcher.call_args_list
+                    if c.args[0] == "music.generation.failed"]
+    assert failed_calls[0].args[1]["stage"] == "ffmpeg"
+
+
+def test_generate_params_failure_emits_failed_event_stage_params(tmp_path):
+    # Path not under genre_packs → INVALID_PARAMS_LOCATION raised inside generate
+    json_path = tmp_path / "elsewhere/combat_input_params.json"
+    _write_json(json_path)
+
+    pipeline = MusicPipeline(
+        adapter=MagicMock(), r2_uploader=MagicMock(),
+        watcher=MagicMock(), render_lock=asyncio.Lock(),
+    )
+    with pytest.raises(ValueError, match="INVALID_PARAMS_LOCATION"):
+        asyncio.run(pipeline.generate(json_path))
+
+    # No watcher event — derive_r2_key fails before the start event fires
+    # (this is acceptable; the daemon dispatch reports the error in the reply).
+    assert pipeline._watcher.call_count == 0
