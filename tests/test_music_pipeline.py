@@ -1,4 +1,8 @@
+import asyncio
+import json
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
 import pytest
 
 from sidequest_daemon.media.music_pipeline import MusicPipeline
@@ -26,11 +30,6 @@ def test_derive_r2_key_rejects_wrong_filename_suffix():
     json_path = Path("/abs/sidequest-content/genre_packs/cav/audio/music/combat.json")
     with pytest.raises(ValueError, match="INVALID_PARAMS_LOCATION"):
         MusicPipeline.derive_r2_key(json_path)
-
-
-import asyncio
-import json
-from unittest.mock import MagicMock, AsyncMock, patch
 
 
 def _write_json(path: Path) -> None:
