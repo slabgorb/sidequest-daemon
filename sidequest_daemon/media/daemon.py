@@ -301,11 +301,6 @@ class WorkerPool:
         self._embed_warmup_ms = 0
         self.pipeline_factory = None  # Set by _run_daemon after init
 
-        # GPU memory coordinator — manages 80GB shared budget across backends
-        from sidequest_daemon.ml.memory_manager import ModelMemoryManager
-
-        self.memory_manager = ModelMemoryManager()
-
     def warm_up_image(self) -> dict:
         """Load and warm up the Z-Image image renderer."""
         if self._image_loaded:
