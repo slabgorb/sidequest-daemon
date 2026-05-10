@@ -26,7 +26,10 @@ import tempfile
 import time
 from enum import StrEnum
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import TYPE_CHECKING, Awaitable, Callable
+
+if TYPE_CHECKING:
+    from sidequest_daemon.media.music_pipeline import MusicPipeline
 
 from opentelemetry import trace
 
@@ -36,6 +39,7 @@ from sidequest_daemon.media.recipes import (
     RenderConfigError,
     StyleMissError,
 )
+from sidequest_daemon.telemetry import emit_watcher_event as _emit_watcher_event
 
 SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
 PID_PATH = Path("/tmp/sidequest-renderer.pid")
@@ -194,6 +198,55 @@ IMAGE_TIERS = frozenset(
     }
 )
 EMBED_TIERS = frozenset({"embed"})
+MUSIC_TIERS = frozenset({"music"})
+
+
+async def dispatch_request(
+    request: dict,
+    *,
+    music_pipeline: "MusicPipeline | None" = None,
+) -> dict:
+    """Route a JSON-RPC render request to the right handler based on tier.
+
+    Currently routes only `tier=music` to `music_pipeline.generate()`.
+    Image tiers (`tier in IMAGE_TIERS`) are still dispatched inline by
+    `_handle_client` — calling this function with an image tier is a
+    programming error.
+
+    Future tasks (see plan 2026-05-10-daemon-between-session-music-generation)
+    will move image dispatch through this function as well.
+    """
+    method = request.get("method")
+    if method != "render":
+        raise NotImplementedError(
+            f"dispatch_request only handles 'render', got {method!r}"
+        )
+
+    params = request.get("params", {})
+    tier = params.get("tier", "")
+
+    if tier in MUSIC_TIERS:
+        if music_pipeline is None:
+            raise RuntimeError("MusicPipeline not initialized")
+        result = await music_pipeline.generate(Path(params["json_params_path"]))
+        return {
+            "id": request.get("id"),
+            "result": {
+                "r2_key": result.r2_key,
+                "duration_ms": result.duration_ms,
+                "seed": result.seed,
+                "elapsed_ms": result.elapsed_ms,
+            },
+        }
+
+    if tier in IMAGE_TIERS:
+        raise NotImplementedError(
+            "Image tier dispatch is still inline in _handle_client; "
+            "dispatch_request handles music only until Task 12 of the "
+            "between-session music generation plan wires image tiers here."
+        )
+
+    raise ValueError(f"Unknown tier: {tier!r}")
 
 
 class EmbedWorker:
@@ -247,11 +300,6 @@ class WorkerPool:
         self._embed_loaded = False
         self._embed_warmup_ms = 0
         self.pipeline_factory = None  # Set by _run_daemon after init
-
-        # GPU memory coordinator — manages 80GB shared budget across backends
-        from sidequest_daemon.ml.memory_manager import ModelMemoryManager
-
-        self.memory_manager = ModelMemoryManager()
 
     def warm_up_image(self) -> dict:
         """Load and warm up the Z-Image image renderer."""
@@ -453,6 +501,40 @@ async def _handle_client(
                         error={"code": "WARMUP_FAILED", "message": str(e)},
                     )
             elif method == "render":
+                # Music-tier short-circuit. Music render requests have a
+                # totally different shape from image-tier requests
+                # (json_params_path, no narration / no game_state) — route
+                # them through dispatch_request before the image-tier
+                # logic touches params it doesn't understand.
+                if params.get("tier") in MUSIC_TIERS:
+                    music_pipeline = (
+                        pool.pipeline_factory.music_pipeline
+                        if pool.pipeline_factory is not None
+                        else None
+                    )
+                    try:
+                        reply = await dispatch_request(
+                            req,
+                            music_pipeline=music_pipeline,
+                        )
+                    except Exception as exc:
+                        log.exception(
+                            "music.dispatch_failed tier=%s exc=%s",
+                            params.get("tier"),
+                            exc.__class__.__name__,
+                        )
+                        _write(
+                            writer,
+                            req_id,
+                            error={
+                                "code": "MUSIC_RENDER_FAILED",
+                                "message": str(exc),
+                            },
+                        )
+                        continue
+                    _write(writer, req_id, result=reply["result"])
+                    continue
+
                 # Beat filter: skip non-visual beats before expensive GPU work
                 if params.get("narration") and params.get("game_state"):
                     from sidequest_daemon.renderer.beat_filter import should_generate
@@ -715,23 +797,18 @@ async def _handle_client(
                         # the path the dashboard's Console / Subsystems
                         # tabs read. Both fire so the failure is visible
                         # at every observation tier.
-                        try:
-                            from sidequest_daemon.telemetry import (
-                                emit_watcher_event as _emit_compose_failure,
-                            )
-                            _emit_compose_failure(
-                                "daemon_compose_failed",
-                                {
-                                    "tier": params.get("tier", ""),
-                                    "error_type": type(e).__name__,
-                                    "error_message": str(e)[:512],
-                                    "world": params.get("world", ""),
-                                    "genre": params.get("genre", ""),
-                                    "render_id": params.get("render_id", ""),
-                                },
-                            )
-                        except Exception:  # noqa: BLE001 — telemetry must never crash the error path
-                            pass
+                        # sync — see sidequest_daemon/telemetry/watcher_bridge.py docstring for trade-off rationale
+                        _emit_watcher_event(
+                            "daemon_compose_failed",
+                            {
+                                "tier": params.get("tier", ""),
+                                "error_type": type(e).__name__,
+                                "error_message": str(e)[:512],
+                                "world": params.get("world", ""),
+                                "genre": params.get("genre", ""),
+                                "render_id": params.get("render_id", ""),
+                            },
+                        )
                         log.warning(
                             "render.compose_failed — tier=%s err_type=%s err=%s",
                             params.get("tier", ""),
@@ -1042,16 +1119,16 @@ async def _run_daemon(
     # a long Flux render no longer blocks a ~30ms embed request.
     embed_lock = asyncio.Lock()
 
-    # Initialize audio pipeline via factory
+    # Initialize music pipeline via factory.
+    # Per the daemon between-session music generation plan (2026-05-10):
+    # the factory now constructs only the music pipeline; audio playback
+    # was retired. Image pipelines are still constructed inline via WorkerPool.
     from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
 
-    pipeline_factory = MediaPipelineFactory(
-        audio_base_path=genre_packs,
-    )
-    # Audio init is deferred until a genre pack is loaded at session start.
-    # The factory is stored on the pool so session handlers can call init_audio.
+    pipeline_factory = MediaPipelineFactory()
+    pipeline_factory.init_music(render_lock=render_lock)
     pool.pipeline_factory = pipeline_factory
-    log.info("MediaPipelineFactory initialized (audio pipeline deferred until session)")
+    log.info("MediaPipelineFactory initialized (music pipeline ready)")
 
     if warmup:
         target = warmup if isinstance(warmup, str) else "all"

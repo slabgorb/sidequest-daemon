@@ -25,6 +25,7 @@ from sidequest_daemon.media.recipes import (
 )
 from sidequest_daemon.media.zimage_config import get_zimage_config
 from sidequest_daemon.renderer.models import RenderTier
+from sidequest_daemon.telemetry import emit_watcher_event as _emit_watcher_event
 
 # Story 45-38: ``RenderTarget.kind`` is portrait/poi/illustration; the
 # Z-Image config is keyed by ``RenderTier``. Map kind → a representative
@@ -39,13 +40,6 @@ _KIND_TO_TIER: dict[str, RenderTier] = {
 }
 
 log = logging.getLogger(__name__)
-
-try:
-    from sidequest_daemon.telemetry import emit_watcher_event as _emit_watcher_event
-except ImportError:
-    # Stand-in when telemetry is not wired; the real module must exist in prod.
-    def _emit_watcher_event(name: str, payload: dict) -> None:
-        log.debug("otel (unwired): %s %s", name, payload)
 
 _TOKEN_LIMIT = 512
 _TOKENS_PER_WORD = 1.3

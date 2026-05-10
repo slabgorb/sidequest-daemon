@@ -121,3 +121,52 @@ def upload_artifact(
         ok_span.set_attribute("upload.ms", dt_ms)
         ok_span.set_attribute("upload.bytes", size)
     return key
+
+
+def upload_pack_asset(
+    *,
+    r2_key: str,
+    content_bytes: bytes,
+    content_type: str,
+) -> str:
+    """Upload `content_bytes` to R2 at `r2_key` (must start with `genre_packs/`).
+
+    Distinct from `upload_artifact`, which writes session-scoped ephemeral
+    content under `artifacts/<world>/<session>/...`. Pack assets use the
+    raw key the caller provides — the JSON params file's location IS the
+    identity (see music_pipeline.derive_r2_key).
+
+    Returns the key. Raises ValueError on invalid key. Propagates any
+    boto3 error verbatim — caller surfaces failure (no silent fallback).
+    """
+    if not r2_key.startswith("genre_packs/"):
+        raise ValueError(f"r2_key must start with 'genre_packs/', got {r2_key!r}")
+    if content_type not in _EXT_FOR_CONTENT_TYPE:
+        raise ValueError(
+            f"content_type must be one of {sorted(_EXT_FOR_CONTENT_TYPE)}, "
+            f"got {content_type!r}"
+        )
+
+    tracer = _get_tracer()
+    size = len(content_bytes)
+    t0 = time.perf_counter()
+
+    with tracer.start_as_current_span("daemon.r2.upload.pack_asset") as span:
+        span.set_attribute("upload.key", r2_key)
+        span.set_attribute("upload.bytes", size)
+        try:
+            _client().put_object(
+                Bucket=BUCKET,
+                Key=r2_key,
+                Body=content_bytes,
+                ContentType=content_type,
+                CacheControl=CACHE_CONTROL_ARTIFACTS,
+            )
+        except Exception as exc:
+            span.set_attribute("upload.error_class", exc.__class__.__name__)
+            span.set_attribute("upload.error_message", str(exc))
+            raise
+        dt_ms = int((time.perf_counter() - t0) * 1000)
+        span.set_attribute("upload.ms", dt_ms)
+
+    return r2_key
