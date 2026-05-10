@@ -36,6 +36,7 @@ from sidequest_daemon.media.recipes import (
     RenderConfigError,
     StyleMissError,
 )
+from sidequest_daemon.telemetry import emit_watcher_event as _emit_watcher_event
 
 SOCKET_PATH = Path("/tmp/sidequest-renderer.sock")
 PID_PATH = Path("/tmp/sidequest-renderer.pid")
@@ -715,23 +716,18 @@ async def _handle_client(
                         # the path the dashboard's Console / Subsystems
                         # tabs read. Both fire so the failure is visible
                         # at every observation tier.
-                        try:
-                            from sidequest_daemon.telemetry import (
-                                emit_watcher_event as _emit_compose_failure,
-                            )
-                            _emit_compose_failure(
-                                "daemon_compose_failed",
-                                {
-                                    "tier": params.get("tier", ""),
-                                    "error_type": type(e).__name__,
-                                    "error_message": str(e)[:512],
-                                    "world": params.get("world", ""),
-                                    "genre": params.get("genre", ""),
-                                    "render_id": params.get("render_id", ""),
-                                },
-                            )
-                        except Exception:  # noqa: BLE001 — telemetry must never crash the error path
-                            pass
+                        # sync — see sidequest_daemon/telemetry/watcher_bridge.py docstring for trade-off rationale
+                        _emit_watcher_event(
+                            "daemon_compose_failed",
+                            {
+                                "tier": params.get("tier", ""),
+                                "error_type": type(e).__name__,
+                                "error_message": str(e)[:512],
+                                "world": params.get("world", ""),
+                                "genre": params.get("genre", ""),
+                                "render_id": params.get("render_id", ""),
+                            },
+                        )
                         log.warning(
                             "render.compose_failed — tier=%s err_type=%s err=%s",
                             params.get("tier", ""),
