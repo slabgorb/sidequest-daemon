@@ -149,3 +149,27 @@ def test_generate_params_failure_emits_failed_event_stage_params(tmp_path):
     # No watcher event — derive_r2_key fails before the start event fires
     # (this is acceptable; the daemon dispatch reports the error in the reply).
     assert pipeline._watcher.call_count == 0
+
+
+def test_generate_cleans_tempfiles_on_failure(tmp_path):
+    pack_dir = tmp_path / "genre_packs/cav/audio/music"
+    json_path = pack_dir / "combat_input_params.json"
+    _write_json(json_path)
+
+    captured_tempdirs = []
+    def capturing_run(jp, output_wav):
+        captured_tempdirs.append(output_wav.parent)
+        raise RuntimeError("fail in inference")
+    adapter = MagicMock()
+    adapter.run.side_effect = capturing_run
+
+    pipeline = MusicPipeline(
+        adapter=adapter, r2_uploader=MagicMock(),
+        watcher=MagicMock(), render_lock=asyncio.Lock(),
+    )
+    with pytest.raises(RuntimeError):
+        asyncio.run(pipeline.generate(json_path))
+
+    assert len(captured_tempdirs) == 1
+    assert not captured_tempdirs[0].exists(), \
+        f"tempdir {captured_tempdirs[0]} should have been cleaned up"
