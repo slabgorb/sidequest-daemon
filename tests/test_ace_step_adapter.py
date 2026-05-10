@@ -27,8 +27,12 @@ def test_prepare_inference_params_strips_output_fields(tmp_path):
     cleaned = prepare_inference_params(json_path, output_wav)
 
     assert cleaned["format"] == "wav"
-    assert cleaned["audio_path"] == str(output_wav)
-    assert cleaned["actual_seeds"] == [42]
+    # ACE-Step's __call__ takes save_path/manual_seeds — the JSON's output-style
+    # names (audio_path/actual_seeds) are renamed on the way in.
+    assert cleaned["save_path"] == str(output_wav)
+    assert cleaned["manual_seeds"] == [42]
+    assert "audio_path" not in cleaned
+    assert "actual_seeds" not in cleaned
     assert "retake_seeds" not in cleaned
     assert "timecosts" not in cleaned
     assert cleaned["prompt"] == "test prompt"
@@ -80,6 +84,70 @@ def test_adapter_run_invokes_acestep_pipeline_with_cleaned_params(tmp_path):
     assert result.seed == 42
     fake_pipeline.assert_called_once()
     call_kwargs = fake_pipeline.call_args.kwargs
-    assert call_kwargs["audio_path"] == str(output_wav)
+    assert call_kwargs["save_path"] == str(output_wav)
     assert call_kwargs["format"] == "wav"
-    assert call_kwargs["actual_seeds"] == [42]
+    assert call_kwargs["manual_seeds"] == [42]
+
+
+def test_prepare_inference_params_only_emits_kwargs_acestep_accepts(tmp_path):
+    """Wiring guard — every key prepare_inference_params produces must be a
+    valid kwarg of ACEStepPipeline.__call__. Catches the actual_seeds vs
+    manual_seeds rename drift that broke first real-pipeline call after
+    daemon-music-tier merged. Does NOT instantiate the pipeline (avoids
+    GPU/model load); only inspects the signature."""
+    import inspect
+
+    from acestep.pipeline_ace_step import ACEStepPipeline
+
+    accepted = set(inspect.signature(ACEStepPipeline.__call__).parameters) - {"self"}
+
+    raw = {
+        "task": "text2music",
+        "format": "wav",
+        "prompt": "test",
+        "lyrics": "[inst]",
+        "audio_duration": 60,
+        "infer_step": 60,
+        "guidance_scale": 15,
+        "scheduler_type": "euler",
+        "cfg_type": "apg",
+        "omega_scale": 10,
+        "actual_seeds": [42],
+        "retake_variance": 0.5,
+        "guidance_interval": 0.5,
+        "guidance_interval_decay": 0.0,
+        "min_guidance_scale": 3.0,
+        "use_erg_tag": True,
+        "use_erg_lyric": False,
+        "use_erg_diffusion": True,
+        "oss_steps": [],
+        "guidance_scale_text": 0.0,
+        "guidance_scale_lyric": 0.0,
+        "repaint_start": 0,
+        "repaint_end": 0,
+        "edit_n_min": 0.0,
+        "edit_n_max": 1.0,
+        "edit_n_avg": 1,
+        "src_audio_path": None,
+        "edit_target_prompt": None,
+        "edit_target_lyrics": None,
+        "audio2audio_enable": False,
+        "ref_audio_strength": 0.5,
+        "ref_audio_input": None,
+        "lora_name_or_path": "none",
+        "lora_weight": 1.0,
+        "audio_path": "/stale/output/path.wav",
+        "retake_seeds": [123],
+        "timecosts": {"diffusion": 1.0},
+    }
+    json_path = tmp_path / "params.json"
+    json_path.write_text(json.dumps(raw))
+
+    cleaned = prepare_inference_params(json_path, tmp_path / "out.wav")
+
+    extras = set(cleaned) - accepted
+    assert not extras, (
+        f"prepare_inference_params produced kwargs ACEStepPipeline.__call__ "
+        f"does not accept: {sorted(extras)}. Either rename them in "
+        f"prepare_inference_params or add them to _OUTPUT_ONLY_FIELDS."
+    )
