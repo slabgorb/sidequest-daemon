@@ -23,7 +23,12 @@ _OUTPUT_ONLY_FIELDS = frozenset({"timecosts", "retake_seeds"})
 
 
 def prepare_inference_params(json_path: Path, output_wav: Path) -> dict[str, Any]:
-    """Read JSON params, strip output fields, override audio_path, force wav.
+    """Read JSON params, strip output fields, force wav, rename to ACE-Step kwargs.
+
+    The JSON params files use ACE-Step's *output* field names (what the
+    library writes back after a run): `actual_seeds`, `audio_path`. The
+    library's `__call__` signature uses *input* names: `manual_seeds`,
+    `save_path`. Rename on the way in.
 
     Raises ValueError if `actual_seeds[0]` is missing or non-integer
     (no implicit randomness — see spec §4.2 seed contract).
@@ -33,15 +38,17 @@ def prepare_inference_params(json_path: Path, output_wav: Path) -> dict[str, Any
     cleaned = {k: v for k, v in raw.items() if k not in _OUTPUT_ONLY_FIELDS}
 
     cleaned["format"] = "wav"
-    cleaned["audio_path"] = str(output_wav)
 
-    seeds = cleaned.get("actual_seeds")
+    seeds = cleaned.pop("actual_seeds", None)
     if not isinstance(seeds, list) or not seeds or not isinstance(seeds[0], int):
         raise ValueError(
             f"MISSING_SEED: {json_path} must have actual_seeds[0] as an integer "
             f"(got {seeds!r})"
         )
-    cleaned["actual_seeds"] = [seeds[0]]
+    cleaned["manual_seeds"] = [seeds[0]]
+
+    cleaned.pop("audio_path", None)
+    cleaned["save_path"] = str(output_wav)
 
     return cleaned
 
@@ -74,4 +81,4 @@ class AceStepAdapter:
         params = prepare_inference_params(json_path, output_wav)
         pipeline = self._ensure_loaded()
         pipeline(**params)
-        return InferenceResult(wav_path=output_wav, seed=params["actual_seeds"][0])
+        return InferenceResult(wav_path=output_wav, seed=params["manual_seeds"][0])
