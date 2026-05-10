@@ -506,6 +506,40 @@ async def _handle_client(
                         error={"code": "WARMUP_FAILED", "message": str(e)},
                     )
             elif method == "render":
+                # Music-tier short-circuit. Music render requests have a
+                # totally different shape from image-tier requests
+                # (json_params_path, no narration / no game_state) — route
+                # them through dispatch_request before the image-tier
+                # logic touches params it doesn't understand.
+                if params.get("tier") in MUSIC_TIERS:
+                    music_pipeline = (
+                        pool.pipeline_factory.music_pipeline
+                        if pool.pipeline_factory is not None
+                        else None
+                    )
+                    try:
+                        reply = await dispatch_request(
+                            req,
+                            music_pipeline=music_pipeline,
+                        )
+                    except Exception as exc:
+                        log.exception(
+                            "music.dispatch_failed tier=%s exc=%s",
+                            params.get("tier"),
+                            exc.__class__.__name__,
+                        )
+                        _write(
+                            writer,
+                            req_id,
+                            error={
+                                "code": "MUSIC_RENDER_FAILED",
+                                "message": str(exc),
+                            },
+                        )
+                        continue
+                    _write(writer, req_id, result=reply["result"])
+                    continue
+
                 # Beat filter: skip non-visual beats before expensive GPU work
                 if params.get("narration") and params.get("game_state"):
                     from sidequest_daemon.renderer.beat_filter import should_generate
@@ -1090,16 +1124,16 @@ async def _run_daemon(
     # a long Flux render no longer blocks a ~30ms embed request.
     embed_lock = asyncio.Lock()
 
-    # Initialize audio pipeline via factory
+    # Initialize music pipeline via factory.
+    # Per the daemon between-session music generation plan (2026-05-10):
+    # the factory now constructs only the music pipeline; audio playback
+    # was retired. Image pipelines are still constructed inline via WorkerPool.
     from sidequest_daemon.media.pipeline_factory import MediaPipelineFactory
 
-    pipeline_factory = MediaPipelineFactory(
-        audio_base_path=genre_packs,
-    )
-    # Audio init is deferred until a genre pack is loaded at session start.
-    # The factory is stored on the pool so session handlers can call init_audio.
+    pipeline_factory = MediaPipelineFactory()
+    pipeline_factory.init_music(render_lock=render_lock)
     pool.pipeline_factory = pipeline_factory
-    log.info("MediaPipelineFactory initialized (audio pipeline deferred until session)")
+    log.info("MediaPipelineFactory initialized (music pipeline ready)")
 
     if warmup:
         target = warmup if isinstance(warmup, str) else "all"
