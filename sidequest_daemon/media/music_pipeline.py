@@ -24,12 +24,17 @@ _GENRE_PACKS_RE = re.compile(r".*?(genre_packs/.*?)/audio/music/(.+?)_input_para
 
 
 def _run_ffmpeg(wav_path: Path, ogg_path: Path) -> None:
-    """Convert WAV → OGG (libvorbis q4). Raises CalledProcessError on failure
-or TimeoutExpired if FFmpeg exceeds 120s (a 60s WAV should convert in
-seconds; a hang means corrupt input)."""
+    """Convert WAV → OGG (libopus, 96kbps). Raises CalledProcessError on
+    failure or TimeoutExpired if FFmpeg exceeds 120s (a 60s WAV should
+    convert in seconds; a hang means corrupt input).
+
+    Container: OGG. Codec: Opus. Picked over libvorbis because the
+    standard Homebrew ffmpeg build ships libopus by default but not
+    libvorbis; Opus also produces smaller files at equivalent quality.
+    """
     subprocess.run(
         ["ffmpeg", "-y", "-i", str(wav_path),
-         "-c:a", "libvorbis", "-q:a", "4", str(ogg_path)],
+         "-c:a", "libopus", "-b:a", "96k", str(ogg_path)],
         check=True, capture_output=True, timeout=120,
     )
 
