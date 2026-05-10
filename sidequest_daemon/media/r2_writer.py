@@ -10,15 +10,19 @@ import hashlib
 import os
 import time
 from functools import lru_cache
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
 import boto3
 from botocore.client import BaseClient
 from opentelemetry import trace
-from opentelemetry.sdk.trace import TracerProvider
+
+if TYPE_CHECKING:
+    from opentelemetry.sdk.trace import TracerProvider
 
 # Test seam — overridden via patch.object in unit tests to inject an
 # in-memory exporter. Production: read the global tracer provider.
+# opentelemetry-sdk is a dev-only dep; the import lives under TYPE_CHECKING
+# so the daemon can run with main deps alone.
 _tracer_provider_for_tests: TracerProvider | None = None
 
 
