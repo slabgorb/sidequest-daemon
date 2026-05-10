@@ -1,8 +1,12 @@
 # CLAUDE.md — SideQuest Daemon (Python)
 
 Python media services sidecar for SideQuest. Handles image generation
-(Flux / Z-Image) and music generation (ACE-Step). Runs alongside the
-Python `sidequest-server` (per ADR-082; previously the Rust `sidequest-api`).
+(Z-Image Turbo via MLX, ADR-070) and music generation (ACE-Step, ADR-095).
+Runs alongside the Python `sidequest-server` (per ADR-082; previously the
+archived Rust `sidequest-api`).
+
+**Active renderer:** Z-Image Turbo. The Flux MLX worker has been retired —
+`media/workers/zimage_mlx_worker.py` is the sole runtime image worker.
 
 ## CRITICAL: Personal Project
 
@@ -96,28 +100,21 @@ ADRs live in the orchestrator repo at `orc-quest/docs/adr/`. See
 `orc-quest/docs/adr/README.md` for the canonical index. Before designing
 or modifying a subsystem, check the relevant ADR:
 
+Particularly relevant to this daemon repo:
+
 | Domain | ADRs |
 |--------|------|
-| Core architecture | 001 (Claude CLI only), 002 (SOUL principles), 005 (background-first), 006 (graceful degradation) |
-| Genre packs | 003 (pack architecture), 004 (lazy binding), 072 (system/milieu decomposition — proposed) |
-| Prompt engineering | 008 (three-tier taxonomy), 009 (attention-aware zones), 066 (persistent Opus sessions / Full vs Delta tier) |
-| Agent system | 010 (intent routing — **superseded by 067**), 011 (JSON patches), 012 (session mgmt), 013 (lazy extraction — superseded by 057), 057 (narrator-crunch separation), 059 (monster manual server-side pregen), 067 (unified narrator agent) |
-| Characters | 007 (unified model), 014 (diamonds/coal), 015 (builder FSM), 016 (three-mode chargen), 080 (unified narrative weight) |
-| Encounters | 017 (cinematic chase — superseded by 033), 033 (confrontation engine + resource pools), 071 (tactical ASCII grids — proposed) |
-| World / NPCs | 018 (trope engine), 019 (cartography), 020 (NPC disposition), 022 (world maturity), 055 (room graph navigation) |
-| Progression | 021 (four-track progression), 052 (narrative axis system) |
-| Narrative pacing | 024 (dual-track tension), 025 (pacing detection), 050 (image pacing throttle), 051 (two-tier turn counter) |
-| Session persistence | 023 (state + recap) |
-| Frontend / protocol | 026 (client state mirror), 027 (reactive state messaging), 065 (protocol message decomposition — proposed), 076 (narration protocol collapse post-TTS — proposed), 079 (genre theme system unification) |
-| Multiplayer | 028 (perception rewriter), 029 (guest NPC players), 030 (scenario packs), 036 (multiplayer turn coordination), 037 (shared/per-player state split), 053 (scenario system) |
-| Transport / IPC | 035 (Unix socket IPC for Python sidecar), 038 (WebSocket transport), 046 (GPU memory budget coordinator), 047 (prompt injection sanitization) |
-| Telemetry / Observability | 031 (game watcher semantic telemetry), 058 (Claude subprocess OTEL passthrough), 090 (OTEL dashboard restoration after port) |
-| Media | 032 (genre LoRA style training), 034 (portrait identity consistency), 044 (speculative prerender), 048 (lore RAG store), 056 (script tool generators), 070 (MLX image renderer) |
-| Dice | 074 (dice resolution protocol — proposed), 075 (3D dice rendering — proposed) |
-| Fine-tuning | 069 (scenario fixtures), 073 (local fine-tuned model architecture) |
-| Codebase structure | 060 (genre models decomposition), 061 (lore module decomposition), 062 (server lib extraction), 063 (dispatch handler splitting), 064 (game crate domain modules), 068 (magic literal extraction), 088 (ADR frontmatter schema and auto-generated indexes) |
-| Project lifecycle | 082 (port back to Python), 085 (tracker hygiene during port) |
-| Historical (removed subsystems) | 054 (WebRTC voice chat — files deleted 2026-04), 045 (client audio engine — two-channel post-TTS) |
+| IPC / transport | 035 (Unix socket IPC for Python sidecar), 046 (GPU memory budget coordinator) |
+| Image rendering | 070 (MLX image renderer — replaces PyTorch/diffusers), 086 (image-composition taxonomy: portrait / POI / illustration), 050 (image pacing throttle), 044 (speculative prerender), 083 (multi-LoRA stacking), 084 (LoRA composition dimension), 096 (cavern renderer revival — partial), 089 (cavern template generation) |
+| Music tier | 095 (daemon music tier via ACE-Step) |
+| Subject / prompts | 056 (script tool generators), 048 (lore RAG store with cross-process embedding) |
+| Training | 073 (local fine-tuned model architecture), 069 (scenario fixtures), 032 (genre LoRA style training), 034 (portrait identity consistency) |
+| Telemetry | 058 (Claude subprocess OTEL passthrough) |
+
+For the full ADR index see `orc-quest/docs/adr/README.md`.
+Drift: `orc-quest/docs/adr/DRIFT.md`. Superseded: `orc-quest/docs/adr/SUPERSEDED.md`.
+
+Historical (removed subsystems): TTS / Piper / Kokoro and runtime per-turn music generation were retired 2026-04. The Flux MLX worker was superseded by Z-Image Turbo.
 
 ## Spoiler Protection
 
@@ -147,10 +144,10 @@ uv run python -m sidequest_daemon  # Run daemon
 ## Architecture
 
 - **Unix socket server** (`/tmp/sidequest-renderer.sock`) — JSON-RPC protocol, routes by `tier` field
-- **Image gen**: Flux.1-dev (12 steps) and Flux.1-schnell (4 steps) via diffusers for portraits, landscapes, scenes, tactical maps, text overlays
-- **Music**: ACE-Step generation tier. Operator runs `scripts/generate_music.py --genre <pack>`; the script discovers `*_input_params.json` files and dispatches each to the daemon as `tier=music`. Daemon runs ACE-Step → ffmpeg WAV→OGG (libopus 96k) → R2 upload at `genre_packs/<pack>/audio/music/<track>.ogg`. See `sidequest_daemon/media/music_pipeline.py` and ADR-095.
+- **Image gen**: Z-Image Turbo via MLX / mflux (ADR-070, ADR-086) — portraits, POI landscapes, illustrations. No negative prompts (prose bleeds as text in Z-Image); see `sidequest-content/PROMPTING_Z_IMAGE.md`.
+- **Music**: ACE-Step generation tier (ADR-095). Operator runs `scripts/generate_music.py --genre <pack>`; the script discovers `*_input_params.json` files and dispatches each to the daemon as `tier=music`. Daemon runs ACE-Step → ffmpeg WAV→OGG (libopus 96k) → R2 upload at `genre_packs/<pack>/audio/music/<track>.ogg`. See `sidequest_daemon/media/music_pipeline.py`.
 - **Scene interpretation**: Rules-based narration → visual cue extraction (StageCue)
-- **Prompt composition**: Tier-specific prefixes, T5 (512 tok) + CLIP (77 tok) budgeting
+- **Subject extraction**: Claude CLI invocation that turns narrator prose into visual descriptions
 - **Config**: Reads genre pack paths from `SIDEQUEST_GENRE_PACKS` env var
 
 ## Git Workflow
