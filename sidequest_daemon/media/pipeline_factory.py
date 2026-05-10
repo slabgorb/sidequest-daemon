@@ -1,89 +1,47 @@
-"""MediaPipelineFactory — lazy construction of audio pipelines.
+"""MediaPipelineFactory — constructs the music pipeline at daemon startup.
 
-Extracted from Orchestrator._init_audio_pipeline() as part of Epic 58
-(Story 58-5). Operates standalone via dependency injection;
-no Orchestrator reference.
+Previously constructed an audio playback pipeline (mixer, queue, etc.)
+that had no production consumers. That tree was deleted; this factory
+now exists solely to wire the music generation pipeline. Image rendering
+is constructed elsewhere; this file is music-only for now.
 """
-
 from __future__ import annotations
 
+import asyncio
 import logging
-from pathlib import Path
-from typing import Any
 
-from sidequest_daemon.audio.interpreter import AudioInterpreter
-from sidequest_daemon.audio.library_backend import LibraryBackend
-from sidequest_daemon.audio.mixer import AudioMixer
-from sidequest_daemon.audio.queue import AudioQueue
-from sidequest_daemon.genre.models import GenrePack
+from sidequest_daemon.media.ace_step_adapter import AceStepAdapter
+from sidequest_daemon.media.music_pipeline import MusicPipeline
+from sidequest_daemon.media.r2_writer import upload_pack_asset
+from sidequest_daemon.telemetry import emit_watcher_event
 
 log = logging.getLogger(__name__)
 
 
 class MediaPipelineFactory:
-    """Constructs audio pipelines lazily from injected dependencies."""
+    """Lazy constructor for the music generation pipeline."""
 
-    def __init__(
-        self,
-        genre_pack: GenrePack | None = None,
-        audio_base_path: Path | None = None,
-    ) -> None:
-        self._genre_pack = genre_pack
-        self._audio_base_path = audio_base_path
+    def __init__(self) -> None:
+        self.music_pipeline: MusicPipeline | None = None
 
-        # Audio pipeline components
-        self.audio_mixer: AudioMixer | None = None
-        self.audio_backend: LibraryBackend | None = None
-        self.audio_interpreter: AudioInterpreter | None = None
-        self.music_director: Any = None
-        self.audio_queue: AudioQueue | None = None
+    def init_music(self, *, render_lock: asyncio.Lock) -> None:
+        """Construct the music pipeline. Called once at daemon startup."""
+        adapter = AceStepAdapter()  # production: lazy-loads model on first run
 
-        # Tracks whether audio was configured (True even if mixer init fails)
-        self.audio_was_configured: bool = False
-
-    def init_audio(self) -> None:
-        """Initialize audio pipeline (mixer, backend, queue, music director)."""
-        audio_config = self._genre_pack.audio if self._genre_pack else None
-        has_audio = (
-            audio_config is not None
-            and self._audio_base_path is not None
-            and (audio_config.mood_tracks or audio_config.sfx_library)
-        )
-
-        self.audio_was_configured = has_audio
-
-        if not has_audio:
-            self.audio_mixer = None
-            self.audio_backend = None
-            self.audio_interpreter = None
-            self.music_director = None
-            self.audio_queue = None
-            return
-
-        assert audio_config is not None
-        assert self._audio_base_path is not None
-        mixer_settings = audio_config.mixer
-
-        try:
-            self.audio_mixer = AudioMixer(
-                duck_level=10 ** (mixer_settings.duck_amount_db / 20),
-            )
-            log.warning("AUDIO: AudioMixer initialized successfully")
-        except Exception as exc:
-            log.warning("AUDIO: AudioMixer init FAILED: %s", exc)
-            self.audio_mixer = None
-
-        if self.audio_mixer is not None and hasattr(self.audio_mixer, "channels"):
-            self.audio_mixer.set_volume("music", mixer_settings.music_volume)
-            self.audio_mixer.set_volume("sfx", mixer_settings.sfx_volume)
-            self.audio_mixer.crossfade_duration_ms = (
-                mixer_settings.crossfade_default_ms
+        def _r2_uploader(content_bytes: bytes, r2_key: str, content_type: str) -> str:
+            return upload_pack_asset(
+                r2_key=r2_key,
+                content_bytes=content_bytes,
+                content_type=content_type,
             )
 
-        self.audio_backend = LibraryBackend(audio_config, self._audio_base_path)
-        self.audio_interpreter = AudioInterpreter()
-        self.music_director = None  # MusicDirector lives in the API, not the daemon
-        self.audio_queue = AudioQueue(
-            backend=self.audio_backend,
-            mixer=self.audio_mixer,
+        def _watcher(event_type: str, fields: dict) -> None:
+            emit_watcher_event(event_type, fields, component="daemon.music")
+
+        self.music_pipeline = MusicPipeline(
+            adapter=adapter,
+            r2_uploader=_r2_uploader,
+            watcher=_watcher,
+            render_lock=render_lock,
         )
+        log.info("MusicPipeline initialized")
