@@ -32,7 +32,11 @@ model warm between requests. The server sends render commands over
 generation across composition tiers from ADR-086: portrait, POI landscape,
 illustration. Targets Apple Silicon via MLX / mflux. Z-Image Turbo is the
 active model; prose bleeds as text in image prompts, so no negative-prompt
-syntax is used. See `sidequest-content/PROMPTING_Z_IMAGE.md`.
+syntax is used. See `sidequest-content/PROMPTING_Z_IMAGE.md`. Per-process
+singleton enforced (story 43-5). Fidelity tier swap via
+`SIDEQUEST_DAEMON_FIDELITY` (story 45-39): default Turbo (~33s/render);
+high-fidelity (story 45-38) for portraits-with-time-to-burn. Renders upload
+to R2 alongside the legacy file path (`r2_key` returned in the response).
 
 **Music Pipeline** (`media/music_pipeline.py`, ADR-095) — ACE-Step generation
 tier. Operator runs `python scripts/generate_music.py --genre <pack>` from the
@@ -94,6 +98,7 @@ just daemon-stop     # Graceful shutdown
 |----------|---------|-------------|
 | `SIDEQUEST_GENRE_PACKS` | `../sidequest-content/genre_packs` | Path to genre packs |
 | `SIDEQUEST_OUTPUT_DIR` | temp dir | Directory for generated output files |
+| `SIDEQUEST_DAEMON_FIDELITY` | `turbo` | Z-Image worker tier — `turbo` (8-step preset, ~33s) or `high_fidelity` (20-step, CFG 4, base 1.0) per story 45-38/45-39 |
 
 ## Protocol
 
