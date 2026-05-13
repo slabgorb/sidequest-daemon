@@ -158,7 +158,7 @@ def _render_request_line() -> bytes:
                     "tier": "portrait",
                     "positive_prompt": "a portrait of someone",
                     "world": "aureate_span",
-                    "genre": "victoria",
+                    "genre": "tea_and_murder",
                     "session_id": "session-1",
                 },
             }
@@ -355,8 +355,8 @@ async def test_render_span_does_carry_style_attrs_positive_control(otel_exporter
         f"render.completed must record world='aureate_span' to match the "
         f"render request payload, got {attrs.get('world')!r}"
     )
-    assert attrs.get("genre") == "victoria", (
-        f"render.completed must record genre='victoria', got {attrs.get('genre')!r}"
+    assert attrs.get("genre") == "tea_and_murder", (
+        f"render.completed must record genre='tea_and_murder', got {attrs.get('genre')!r}"
     )
     assert pool.render_calls == 1, "render handler did not invoke pool.render"
     assert pool.embed_calls == 1, "embed handler did not invoke pool.embed"

@@ -151,7 +151,7 @@ def test_unknown_culture_raises():
 
 
 def test_poi_without_slug_derives_slug_from_name(tmp_path) -> None:
-    """Production worlds (e.g. ``victoria/blackthorn_moor``) author POIs with
+    """Production worlds (e.g. ``tea_and_murder/blackthorn_moor``) author POIs with
     ``name``/``description`` and no ``slug``. Pre-fix the loader did
     ``slug = poi["slug"]`` and crashed with ``KeyError('slug')`` on every
     render, polluting the GM panel with ``compose.skipped reason=KeyError
@@ -171,8 +171,8 @@ def test_poi_without_slug_derives_slug_from_name(tmp_path) -> None:
         "      - name: The Morning Room\n"
         "        description: 'Oak panels, leaded windows.'\n"
         "        visual_prompt:\n"
-        "          solo: 'a Victorian morning room, leaded windows'\n"
-        "          backdrop: 'a Victorian morning room'\n"
+        "          solo: 'an Edwardian morning room, leaded windows'\n"
+        "          backdrop: 'an Edwardian morning room'\n"
         "        environment:\n"
         "          solo: 'rain on glass, gas-lamp glow, hush'\n"
         "          backdrop: 'gas-lamp glow'\n"
