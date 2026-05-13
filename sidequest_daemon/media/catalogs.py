@@ -147,7 +147,7 @@ class PlaceCatalog:
         data = yaml.safe_load(path.read_text()) or {}
         for chapter in data.get("chapters", []):
             for poi in chapter.get("points_of_interest", []):
-                # Production worlds (e.g. victoria/blackthorn_moor) author POIs
+                # Production worlds (e.g. tea_and_murder/blackthorn_moor) author POIs
                 # with `name` only — derive the slug parallel to
                 # CharacterCatalog.load. Fail loud only when neither is honored.
                 slug = poi.get("slug")
