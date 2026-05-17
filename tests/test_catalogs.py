@@ -233,3 +233,45 @@ def test_poi_without_slug_or_name_fails_loud(tmp_path) -> None:
         PlaceCatalog.load(tmp_path, genre="fail", world="world")
 
 
+def test_missing_portrait_manifest_yields_empty_catalog(tmp_path) -> None:
+    """A world with NO ``portrait_manifest.yaml`` is the contract-correct
+    state for worlds whose ``world_register.yaml humanoid_constraint``
+    forbids townsfolk-tone named portraits (e.g. ``beneath_sunden``).
+
+    Pre-fix, ``CharacterCatalog.load`` did ``path.read_text()`` with no
+    existence guard — a missing manifest raised ``FileNotFoundError``,
+    which propagated out of the catalog-composed render path and *closed
+    the daemon render socket* (observed live: every POI render in
+    ``beneath_sunden`` died until an empty ``characters: []`` file was
+    hand-placed as a workaround).
+
+    The sibling ``PlaceCatalog._load_specific`` already treats its
+    world artifact (``history.yaml``) as optional with
+    ``if not path.exists(): return``. ``portrait_manifest.yaml`` is
+    equally optional per the server loader contract
+    (``loader.py`` ``_load_portrait_manifest`` is ``.exists()``-guarded).
+    Conform to the family standard: a missing manifest is an empty
+    catalog, not a socket-killing exception."""
+    pack = tmp_path / "graven"
+    (pack / "worlds" / "the_deep").mkdir(parents=True)
+    # Deliberately author NO portrait_manifest.yaml.
+    cat = CharacterCatalog.load(pack.parent, genre="graven", world="the_deep")
+    with pytest.raises(CatalogMissError) as exc:
+        cat.get("npc:anyone")
+    assert exc.value.source == "CharacterCatalog"
+
+
+def test_empty_portrait_manifest_yields_empty_catalog(tmp_path) -> None:
+    """An empty/whitespace ``portrait_manifest.yaml`` parses to ``None``.
+    Pre-fix ``data.get("characters", [])`` on ``None`` raised
+    ``AttributeError`` — the same socket-killing failure mode as a
+    missing file. ``PlaceCatalog`` already hardens this with
+    ``yaml.safe_load(...) or {}``; ``CharacterCatalog`` must match."""
+    pack = tmp_path / "graven"
+    (pack / "worlds" / "the_deep").mkdir(parents=True)
+    (pack / "worlds" / "the_deep" / "portrait_manifest.yaml").write_text("\n")
+    cat = CharacterCatalog.load(pack.parent, genre="graven", world="the_deep")
+    with pytest.raises(CatalogMissError):
+        cat.get("npc:anyone")
+
+

@@ -50,7 +50,13 @@ class CharacterCatalog:
         world: str,
     ) -> "CharacterCatalog":
         path = genre_packs_root / genre / "worlds" / world / "portrait_manifest.yaml"
-        data = yaml.safe_load(path.read_text())
+        # Optional artifact, mirroring PlaceCatalog._load_specific: a world
+        # whose world_register humanoid_constraint forbids townsfolk-tone
+        # named portraits legitimately ships no manifest. A missing or empty
+        # file is an empty catalog, never a render-socket-killing exception.
+        if not path.exists():
+            return cls({})
+        data = yaml.safe_load(path.read_text()) or {}
         entries: dict[str, CharacterTokens] = {}
         for raw in data.get("characters", []):
             # Production manifests use flat `name` + `appearance`; the
