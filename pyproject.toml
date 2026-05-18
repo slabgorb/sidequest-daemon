@@ -26,6 +26,7 @@ dependencies = [
 [project.scripts]
 sidequest-renderer = "sidequest_daemon.media.daemon:main"
 sidequest-train = "sidequest_daemon.training.cli:main"
+sidequest-deploy = "sidequest_daemon.training.deploy_cli:main"
 sidequest-promptpreview = "sidequest_daemon.media.preview:main"
 
 [build-system]
